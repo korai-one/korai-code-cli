@@ -18,7 +18,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/prompt"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools/readfile"
+	"github.com/Nevaero/korai-code-cli/internal/tools"
 )
 
 func main() {
@@ -86,7 +86,7 @@ func runPrint(ctx context.Context, userPrompt, model string) error {
 
 	client := apiclient.NewAnthropicClient(apiKey, model)
 	registry := tool.NewRegistry()
-	registry.Register(readfile.New())
+	tools.RegisterAll(registry)
 
 	eng := engine.New(client, registry, perm.ModeDefault, tool.Deps{WorkDir: wd})
 	system := prompt.Compose(appctx.Build(ctx, wd))

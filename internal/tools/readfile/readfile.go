@@ -57,7 +57,7 @@ func (t *Tool) CheckPermission(_ context.Context, _ json.RawMessage, mode perm.M
 func (t *Tool) Execute(ctx context.Context, raw json.RawMessage, deps tool.Deps) (tool.Result, error) {
 	var in Input
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return tool.Result{}, fmt.Errorf("ReadFile: invalid input: %w", err)
+		return tool.Result{}, fmt.Errorf("readfile: invalid input: %w", err)
 	}
 	if in.Path == "" {
 		return tool.Result{Content: "path is required", IsError: true}, nil
