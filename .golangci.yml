@@ -1,0 +1,31 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - gocritic
+    - revive
+    - bodyclose
+    - contextcheck
+    - errorlint
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+      - name: error-return
+      - name: error-naming
+      - name: error-strings
+      - name: var-naming
+
+issues:
+  exclude-rules:
+    # test files are allowed more latitude
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
