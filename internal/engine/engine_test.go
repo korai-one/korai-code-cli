@@ -75,7 +75,8 @@ func TestEngineReadFileLoop(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(readfile.New())
 
-	eng := engine.New(client, registry, perm.ModeBypassPermissions, tool.Deps{WorkDir: fixtureDir})
+	permEngine := perm.NewEngine(perm.ModeBypassPermissions, perm.Rules{}, perm.DenyAsker{})
+	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: fixtureDir})
 	messages := []apiclient.Message{
 		{
 			Role:    apiclient.RoleUser,

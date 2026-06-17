@@ -15,17 +15,17 @@ import (
 type Engine struct {
 	client   apiclient.Client
 	registry *tool.Registry
-	permMode perm.Mode
+	perm     *perm.Engine
 	deps     tool.Deps
 }
 
 // New creates an Engine with the given inference client, tool registry,
-// permission mode, and tool dependencies.
-func New(client apiclient.Client, registry *tool.Registry, mode perm.Mode, deps tool.Deps) *Engine {
+// permission engine, and tool dependencies.
+func New(client apiclient.Client, registry *tool.Registry, permEngine *perm.Engine, deps tool.Deps) *Engine {
 	return &Engine{
 		client:   client,
 		registry: registry,
-		permMode: mode,
+		perm:     permEngine,
 		deps:     deps,
 	}
 }
@@ -127,7 +127,8 @@ func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCom
 	return assistantBlocks, resultBlocks, nil
 }
 
-// dispatchTool looks up the tool, checks permissions, and executes it.
+// dispatchTool looks up the tool, resolves permission through the permission
+// engine, and executes it if allowed.
 func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallCompleteEvent, ch chan<- Event) tool.Result {
 	t, ok := e.registry.Get(call.Name)
 	if !ok {
@@ -137,10 +138,21 @@ func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallComple
 		}
 	}
 
-	decision := t.CheckPermission(ctx, call.Input, e.permMode)
-	if decision == perm.DecisionDeny {
+	base := t.CheckPermission(ctx, call.Input, e.perm.Mode())
+	outcome, err := e.perm.Resolve(ctx, perm.Request{
+		ToolName: call.Name,
+		Input:    call.Input,
+		Base:     base,
+	})
+	if err != nil {
 		return tool.Result{
-			Content: fmt.Sprintf("tool %q denied by permission policy", call.Name),
+			Content: fmt.Sprintf("permission resolution for %q failed: %v", call.Name, err),
+			IsError: true,
+		}
+	}
+	if outcome == perm.OutcomeDenied {
+		return tool.Result{
+			Content: fmt.Sprintf("tool %q was not permitted in the current permission mode", call.Name),
 			IsError: true,
 		}
 	}

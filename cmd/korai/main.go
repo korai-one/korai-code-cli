@@ -28,11 +28,21 @@ func main() {
 	}
 }
 
+// runOptions holds the resolved CLI flags for a headless run.
+type runOptions struct {
+	prompt   string
+	model    string
+	permMode perm.Mode
+	autoYes  bool
+}
+
 func rootCmd() *cobra.Command {
 	var (
 		printPrompt string
 		model       string
 		debug       bool
+		permModeStr string
+		autoYes     bool
 	)
 
 	root := &cobra.Command{
@@ -42,8 +52,17 @@ func rootCmd() *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			setupLogging(debug)
+			mode, err := perm.ParseMode(permModeStr)
+			if err != nil {
+				return err
+			}
 			if printPrompt != "" {
-				return runPrint(cmd.Context(), printPrompt, model)
+				return runPrint(cmd.Context(), runOptions{
+					prompt:   printPrompt,
+					model:    model,
+					permMode: mode,
+					autoYes:  autoYes,
+				})
 			}
 			// TODO(phase4): launch interactive TUI
 			return cmd.Help()
@@ -53,6 +72,10 @@ func rootCmd() *cobra.Command {
 	root.Flags().StringVar(&printPrompt, "print", "", "run a single prompt in headless mode and exit")
 	root.Flags().StringVar(&model, "model", "claude-sonnet-4-6", "model identifier")
 	root.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
+	root.Flags().StringVar(&permModeStr, "permission-mode", "default",
+		"permission mode: default | plan | acceptEdits | bypassPermissions")
+	root.Flags().BoolVar(&autoYes, "yes", false,
+		"auto-approve prompts that would otherwise be denied in headless mode")
 
 	return root
 }
@@ -70,7 +93,7 @@ func setupLogging(debug bool) {
 
 // runPrint drives the engine in headless mode, printing streamed text to stdout.
 // SIGINT/SIGTERM cancel the context so an in-flight turn stops cleanly.
-func runPrint(ctx context.Context, userPrompt, model string) error {
+func runPrint(ctx context.Context, opts runOptions) error {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		return fmt.Errorf("ANTHROPIC_API_KEY is not set")
@@ -84,17 +107,25 @@ func runPrint(ctx context.Context, userPrompt, model string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client := apiclient.NewAnthropicClient(apiKey, model)
+	client := apiclient.NewAnthropicClient(apiKey, opts.model)
 	registry := tool.NewRegistry()
 	tools.RegisterAll(registry)
 
-	eng := engine.New(client, registry, perm.ModeDefault, tool.Deps{WorkDir: wd})
+	// Headless runs have no interactive prompt: an "ask" decision is denied by
+	// default (safe), or auto-approved when --yes is set.
+	var asker perm.Asker = perm.DenyAsker{}
+	if opts.autoYes {
+		asker = perm.AllowAsker{}
+	}
+	permEngine := perm.NewEngine(opts.permMode, perm.Rules{}, asker)
+
+	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: wd})
 	system := prompt.Compose(appctx.Build(ctx, wd))
 	messages := []apiclient.Message{
-		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: userPrompt}}},
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
 	}
 
-	slog.Debug("starting headless turn", "model", model, "workdir", wd)
+	slog.Debug("starting headless turn", "model", opts.model, "workdir", wd, "permission_mode", opts.permMode.String())
 
 	for evt := range eng.Run(ctx, messages, system) {
 		switch v := evt.(type) {
