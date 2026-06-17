@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -37,39 +38,59 @@ func (e *Engine) Run(ctx context.Context, messages []apiclient.Message, system s
 	ch := make(chan Event, 64)
 	go func() {
 		defer close(ch)
-		if err := e.run(ctx, messages, system, ch); err != nil {
+		history, err := e.run(ctx, messages, system, ch)
+		if err != nil {
 			send(ch, ErrorEvent{Err: err})
-		} else {
-			send(ch, DoneEvent{})
+			return
 		}
+		send(ch, DoneEvent{Messages: history})
 	}()
 	return ch
 }
 
-func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system string, ch chan<- Event) error {
+// run drives the tool-calling loop and returns the full conversation history
+// after the turn (the model's responses appended to the input messages), so the
+// caller can carry context into the next turn.
+func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system string, ch chan<- Event) ([]apiclient.Message, error) {
 	history := make([]apiclient.Message, len(messages))
 	copy(history, messages)
 
 	for {
 		req := e.buildRequest(ctx, history, system)
-		toolCalls, stopReason, err := e.streamTurn(ctx, req, ch)
+		turn, err := e.streamTurn(ctx, req, ch)
 		if err != nil {
-			return err
+			return history, err
 		}
-		if len(toolCalls) == 0 {
-			if stopReason == "max_tokens" {
+		if len(turn.toolCalls) == 0 {
+			if turn.stopReason == "max_tokens" {
 				slog.Warn("response truncated: hit max output tokens")
 			}
-			return nil
+			// Record the final assistant text so the next turn has it in context.
+			if turn.text != "" {
+				history = append(history, apiclient.Message{
+					Role:    apiclient.RoleAssistant,
+					Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: turn.text}},
+				})
+			}
+			return history, nil
 		}
 
 		// Execute all tool calls and collect results.
-		assistantContent, results, err := e.executeTools(ctx, toolCalls, ch)
+		assistantContent, results, err := e.executeTools(ctx, turn.toolCalls, ch)
 		if err != nil {
-			return err
+			return history, err
 		}
 
-		// Append the assistant turn (with its tool calls) and the tool results.
+		// Prepend any text the model emitted alongside its tool calls so the
+		// assistant turn is recorded faithfully.
+		if turn.text != "" {
+			assistantContent = append(
+				[]apiclient.ContentBlock{apiclient.TextBlock{Text: turn.text}},
+				assistantContent...,
+			)
+		}
+
+		// Append the assistant turn (text + tool calls) and the tool results.
 		history = append(history,
 			apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
 			apiclient.Message{Role: apiclient.RoleUser, Content: results},
@@ -77,35 +98,44 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	}
 }
 
+// turnResult captures what a single model turn produced.
+type turnResult struct {
+	toolCalls  []apiclient.ToolCallCompleteEvent
+	text       string
+	stopReason string
+}
+
 // streamTurn calls the model and streams events until the turn ends. It returns
-// the tool calls accumulated during the stream and the stop reason reported by
-// the backend.
-func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<- Event) ([]apiclient.ToolCallCompleteEvent, string, error) {
+// the tool calls accumulated during the stream, the assistant text emitted, and
+// the stop reason reported by the backend.
+func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<- Event) (turnResult, error) {
 	apiCh, err := e.client.Complete(ctx, req)
 	if err != nil {
-		return nil, "", fmt.Errorf("complete: %w", err)
+		return turnResult{}, fmt.Errorf("complete: %w", err)
 	}
 
 	var (
-		toolCalls  []apiclient.ToolCallCompleteEvent
-		stopReason string
+		res  turnResult
+		text strings.Builder
 	)
 	for evt := range apiCh {
 		if ctx.Err() != nil {
-			return nil, "", ctx.Err()
+			return turnResult{}, ctx.Err()
 		}
 		switch v := evt.(type) {
 		case apiclient.TextDeltaEvent:
+			text.WriteString(v.Text)
 			send(ch, TextEvent{Text: v.Text})
 		case apiclient.ToolCallCompleteEvent:
-			toolCalls = append(toolCalls, v)
+			res.toolCalls = append(res.toolCalls, v)
 		case apiclient.MessageCompleteEvent:
-			stopReason = v.StopReason
+			res.stopReason = v.StopReason
 		case apiclient.ErrorEvent:
-			return nil, "", v.Err
+			return turnResult{}, v.Err
 		}
 	}
-	return toolCalls, stopReason, nil
+	res.text = text.String()
+	return res, nil
 }
 
 // executeTools runs each tool call, gating on permissions, and returns the

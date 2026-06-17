@@ -5,11 +5,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
@@ -19,6 +21,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/prompt"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 	"github.com/Nevaero/korai-code-cli/internal/tools"
+	"github.com/Nevaero/korai-code-cli/internal/tui"
 )
 
 func main() {
@@ -51,21 +54,32 @@ func rootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			setupLogging(debug)
 			mode, err := perm.ParseMode(permModeStr)
 			if err != nil {
 				return err
 			}
-			if printPrompt != "" {
-				return runPrint(cmd.Context(), runOptions{
-					prompt:   printPrompt,
-					model:    model,
-					permMode: mode,
-					autoYes:  autoYes,
-				})
+			opts := runOptions{
+				prompt:   printPrompt,
+				model:    model,
+				permMode: mode,
+				autoYes:  autoYes,
 			}
-			// TODO(phase4): launch interactive TUI
-			return cmd.Help()
+			if printPrompt != "" {
+				setupLogging(debug, os.Stderr)
+				return runPrint(cmd.Context(), opts)
+			}
+			// The TUI owns the screen: stderr logging would corrupt it, so logs
+			// are discarded unless --debug routes them to a file.
+			logTarget := io.Discard
+			if debug {
+				f, ferr := os.CreateTemp("", "korai-*.log")
+				if ferr == nil {
+					defer func() { _ = f.Close() }()
+					logTarget = f
+				}
+			}
+			setupLogging(debug, logTarget)
+			return runTUI(cmd.Context(), opts)
 		},
 	}
 
@@ -80,14 +94,14 @@ func rootCmd() *cobra.Command {
 	return root
 }
 
-// setupLogging configures slog to write structured logs to stderr. At default
-// level only warnings and errors are shown so they don't pollute --print output.
-func setupLogging(debug bool) {
+// setupLogging configures slog to write structured logs to w. At default level
+// only warnings and errors are shown so they don't pollute output.
+func setupLogging(debug bool, w io.Writer) {
 	level := slog.LevelWarn
 	if debug {
 		level = slog.LevelDebug
 	}
-	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	h := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(h))
 }
 
@@ -142,5 +156,35 @@ func runPrint(ctx context.Context, opts runOptions) error {
 		}
 	}
 	fmt.Println()
+	return nil
+}
+
+// runTUI launches the interactive Bubble Tea REPL. Permission prompts are
+// resolved interactively by the TUI's own Asker, so --yes does not apply here.
+func runTUI(ctx context.Context, opts runOptions) error {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		return fmt.Errorf("ANTHROPIC_API_KEY is not set")
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+
+	client := apiclient.NewAnthropicClient(apiKey, opts.model)
+	registry := tool.NewRegistry()
+	tools.RegisterAll(registry)
+
+	asker := tui.NewAsker()
+	permEngine := perm.NewEngine(opts.permMode, perm.Rules{}, asker)
+	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: wd})
+	system := prompt.Compose(appctx.Build(ctx, wd))
+
+	model := tui.New(eng, asker, system)
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("tui: %w", err)
+	}
 	return nil
 }

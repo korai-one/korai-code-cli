@@ -1,0 +1,331 @@
+// Package tui is the Bubble Tea interactive REPL. It consumes engine events and
+// renders the transcript, streaming output, and permission dialogs.
+//
+// Elm discipline (AGENTS.md §4.3): Update is pure and fast, every blocking
+// operation lives in a tea.Cmd, and View only renders. The engine's event
+// channel and the interactive Asker are both bridged into messages via Cmds.
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/engine"
+	"github.com/Nevaero/korai-code-cli/internal/perm"
+)
+
+type entryKind int
+
+const (
+	kindUser entryKind = iota
+	kindAssistant
+	kindTool
+	kindToolResult
+	kindError
+	kindInfo
+)
+
+// entry is one rendered line group in the transcript.
+type entry struct {
+	kind entryKind
+	text string
+}
+
+// Model is the Bubble Tea model for the REPL.
+type Model struct {
+	runner Runner
+	asker  *Asker
+	system string
+
+	history   []apiclient.Message
+	entries   []entry
+	streaming bool // an assistant entry is currently being appended to
+
+	input    textinput.Model
+	spinner  spinner.Model
+	viewport viewport.Model
+	styles   styles
+
+	busy    bool
+	pending *permRequest
+	cancel  context.CancelFunc
+
+	width, height int
+	ready         bool
+	quitting      bool
+}
+
+// New builds a REPL model bound to a Runner, the interactive Asker, and the
+// system prompt for the session.
+func New(runner Runner, asker *Asker, system string) Model {
+	ti := textinput.New()
+	ti.Placeholder = "Ask Korai…"
+	ti.Prompt = "› "
+	ti.Focus()
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+
+	return Model{
+		runner:  runner,
+		asker:   asker,
+		system:  system,
+		input:   ti,
+		spinner: sp,
+		styles:  newStyles(),
+	}
+}
+
+// Init starts the input cursor blink and begins listening for permission
+// requests from the engine.
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(textinput.Blink, waitForPermission(m.asker))
+}
+
+// Update is the pure state transition. All I/O is deferred to the returned Cmd.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		return m.onResize(msg)
+	case tea.KeyMsg:
+		return m.onKey(msg)
+	case spinner.TickMsg:
+		if m.busy {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	case permRequestMsg:
+		m.pending = &msg.pr
+		return m, nil
+	case engineEventMsg:
+		return m.onEngineEvent(msg)
+	case turnDoneMsg:
+		m.busy = false
+		m.streaming = false
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.width = msg.Width
+	m.height = msg.Height
+	m.input.Width = msg.Width - 4
+
+	// Reserve two lines below the transcript: a status line and the input.
+	vpHeight := msg.Height - 2
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	if !m.ready {
+		m.viewport = viewport.New(msg.Width, vpHeight)
+		m.ready = true
+	} else {
+		m.viewport.Width = msg.Width
+		m.viewport.Height = vpHeight
+	}
+	m.refreshViewport()
+	return m, nil
+}
+
+func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	// Permission dialog takes priority over all other input.
+	if m.pending != nil {
+		return m.onDialogKey(msg)
+	}
+
+	if m.busy {
+		if msg.String() == "esc" && m.cancel != nil {
+			m.cancel()
+			m.addEntry(kindInfo, "interrupted")
+		}
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyEnter {
+		return m.submit()
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var decision perm.Decision
+	switch msg.String() {
+	case "y", "Y":
+		decision = perm.DecisionAllow
+	case "n", "N", "esc":
+		decision = perm.DecisionDeny
+	default:
+		return m, nil
+	}
+
+	pr := *m.pending
+	m.pending = nil
+	verb := "denied"
+	if decision == perm.DecisionAllow {
+		verb = "allowed"
+	}
+	m.addEntry(kindInfo, fmt.Sprintf("%s %s", verb, pr.req.ToolName))
+	return m, tea.Batch(replyPermission(pr, decision), waitForPermission(m.asker))
+}
+
+func (m Model) submit() (tea.Model, tea.Cmd) {
+	text := strings.TrimSpace(m.input.Value())
+	if text == "" {
+		return m, nil
+	}
+	m.input.Reset()
+	m.addEntry(kindUser, text)
+
+	m.history = append(m.history, apiclient.Message{
+		Role:    apiclient.RoleUser,
+		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: text}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	ch := m.runner.Run(ctx, m.history, m.system)
+	m.busy = true
+	m.streaming = false
+
+	return m, tea.Batch(waitForEvent(ch), m.spinner.Tick)
+}
+
+func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
+	switch ev := msg.event.(type) {
+	case engine.TextEvent:
+		if m.streaming && len(m.entries) > 0 {
+			m.entries[len(m.entries)-1].text += ev.Text
+		} else {
+			m.entries = append(m.entries, entry{kind: kindAssistant, text: ev.Text})
+			m.streaming = true
+		}
+	case engine.ToolStartEvent:
+		m.streaming = false
+		m.addEntry(kindTool, fmt.Sprintf("%s %s", ev.Name, strings.TrimSpace(string(ev.Input))))
+	case engine.ToolResultEvent:
+		m.streaming = false
+		if ev.Result.IsError {
+			m.addEntry(kindToolResult, "error: "+oneLine(ev.Result.Content))
+		} else {
+			m.addEntry(kindToolResult, oneLine(ev.Result.Content))
+		}
+	case engine.DoneEvent:
+		m.history = ev.Messages
+		m.busy = false
+		m.streaming = false
+		m.refreshViewport()
+		return m, nil
+	case engine.ErrorEvent:
+		m.addEntry(kindError, ev.Err.Error())
+		m.busy = false
+		m.streaming = false
+		m.refreshViewport()
+		return m, nil
+	}
+	m.refreshViewport()
+	return m, waitForEvent(msg.ch)
+}
+
+// addEntry appends a transcript entry and scrolls to the bottom.
+func (m *Model) addEntry(kind entryKind, text string) {
+	m.entries = append(m.entries, entry{kind: kind, text: text})
+	m.refreshViewport()
+}
+
+func (m *Model) refreshViewport() {
+	if !m.ready {
+		return
+	}
+	m.viewport.SetContent(m.renderEntries())
+	m.viewport.GotoBottom()
+}
+
+func (m Model) renderEntries() string {
+	w := m.viewport.Width
+	var b strings.Builder
+	for i, e := range m.entries {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		switch e.kind {
+		case kindUser:
+			b.WriteString(m.styles.user.Width(w).Render("› " + e.text))
+		case kindAssistant:
+			b.WriteString(m.styles.assistant.Width(w).Render(e.text))
+		case kindTool:
+			b.WriteString(m.styles.tool.Width(w).Render("⚙ " + e.text))
+		case kindToolResult:
+			b.WriteString(m.styles.toolResult.Width(w).Render("  ↳ " + e.text))
+		case kindError:
+			b.WriteString(m.styles.errorText.Width(w).Render("✗ " + e.text))
+		case kindInfo:
+			b.WriteString(m.styles.info.Width(w).Render("• " + e.text))
+		}
+	}
+	return b.String()
+}
+
+// View renders the current frame.
+func (m Model) View() string {
+	if m.quitting {
+		return ""
+	}
+	if !m.ready {
+		return "initializing…"
+	}
+
+	var bottom string
+	switch {
+	case m.pending != nil:
+		bottom = m.renderDialog()
+	case m.busy:
+		bottom = m.spinner.View() + " working… (esc to interrupt)"
+	default:
+		bottom = m.input.View()
+	}
+
+	return strings.Join([]string{m.viewport.View(), bottom}, "\n")
+}
+
+func (m Model) renderDialog() string {
+	pr := m.pending
+	body := fmt.Sprintf("Allow %s?  [y]es / [n]o", pr.req.ToolName)
+	if args := oneLine(string(pr.req.Input)); args != "" {
+		body = fmt.Sprintf("Allow %s?\n%s\n[y]es / [n]o", pr.req.ToolName, args)
+	}
+	return m.styles.dialog.Render(body)
+}
+
+// oneLine collapses content to a single trimmed line, truncated for display.
+func oneLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i] + " …"
+	}
+	const maxLen = 120
+	if len(s) > maxLen {
+		s = s[:maxLen] + "…"
+	}
+	return s
+}

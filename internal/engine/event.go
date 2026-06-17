@@ -7,6 +7,7 @@ package engine
 import (
 	"encoding/json"
 
+	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
 
@@ -32,8 +33,9 @@ type ToolResultEvent struct {
 // ErrorEvent signals a terminal error. The engine stops after sending this.
 type ErrorEvent struct{ Err error }
 
-// DoneEvent signals that the agent loop has finished cleanly.
-type DoneEvent struct{}
+// DoneEvent signals that the agent loop has finished cleanly. Messages is the
+// full conversation history after the turn, for carrying context forward.
+type DoneEvent struct{ Messages []apiclient.Message }
 
 func (TextEvent) engineEvent()       {}
 func (ToolStartEvent) engineEvent()  {}
