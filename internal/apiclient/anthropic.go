@@ -189,18 +189,24 @@ func convertContentBlocks(blocks []ContentBlock) ([]anthropic.ContentBlockParamU
 }
 
 // convertTools converts our ToolDef slice to anthropic.ToolUnionParam slice.
+// It parses the full JSON Schema object and extracts the properties and
+// required list the API's ToolInputSchemaParam expects.
 func convertTools(tools []ToolDef) ([]anthropic.ToolUnionParam, error) {
 	out := make([]anthropic.ToolUnionParam, 0, len(tools))
 	for _, t := range tools {
-		var props any
-		if err := json.Unmarshal(t.InputSchema, &props); err != nil {
+		var schema struct {
+			Properties any      `json:"properties"`
+			Required   []string `json:"required"`
+		}
+		if err := json.Unmarshal(t.InputSchema, &schema); err != nil {
 			return nil, fmt.Errorf("tool %q: bad input schema: %w", t.Name, err)
 		}
 		tp := anthropic.ToolParam{
 			Name:        t.Name,
 			Description: anthropic.String(t.Description),
 			InputSchema: anthropic.ToolInputSchemaParam{
-				Properties: props,
+				Properties: schema.Properties,
+				Required:   schema.Required,
 			},
 		}
 		out = append(out, anthropic.ToolUnionParam{OfTool: &tp})

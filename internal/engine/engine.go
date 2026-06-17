@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -51,11 +52,14 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 
 	for {
 		req := e.buildRequest(ctx, history, system)
-		toolCalls, err := e.streamTurn(ctx, req, ch)
+		toolCalls, stopReason, err := e.streamTurn(ctx, req, ch)
 		if err != nil {
 			return err
 		}
 		if len(toolCalls) == 0 {
+			if stopReason == "max_tokens" {
+				slog.Warn("response truncated: hit max output tokens")
+			}
 			return nil
 		}
 
@@ -73,29 +77,35 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	}
 }
 
-// streamTurn calls the model and streams events until the turn ends.
-// It returns any tool calls that were accumulated during the stream.
-func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<- Event) ([]apiclient.ToolCallCompleteEvent, error) {
+// streamTurn calls the model and streams events until the turn ends. It returns
+// the tool calls accumulated during the stream and the stop reason reported by
+// the backend.
+func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<- Event) ([]apiclient.ToolCallCompleteEvent, string, error) {
 	apiCh, err := e.client.Complete(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("complete: %w", err)
+		return nil, "", fmt.Errorf("complete: %w", err)
 	}
 
-	var toolCalls []apiclient.ToolCallCompleteEvent
+	var (
+		toolCalls  []apiclient.ToolCallCompleteEvent
+		stopReason string
+	)
 	for evt := range apiCh {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		}
 		switch v := evt.(type) {
 		case apiclient.TextDeltaEvent:
 			send(ch, TextEvent{Text: v.Text})
 		case apiclient.ToolCallCompleteEvent:
 			toolCalls = append(toolCalls, v)
+		case apiclient.MessageCompleteEvent:
+			stopReason = v.StopReason
 		case apiclient.ErrorEvent:
-			return nil, v.Err
+			return nil, "", v.Err
 		}
 	}
-	return toolCalls, nil
+	return toolCalls, stopReason, nil
 }
 
 // executeTools runs each tool call, gating on permissions, and returns the
@@ -150,10 +160,9 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 	tools := e.registry.All()
 	toolDefs := make([]apiclient.ToolDef, 0, len(tools))
 	for _, t := range tools {
-		schema := t.InputSchema()
-		raw, err := json.Marshal(schema.Properties)
+		raw, err := json.Marshal(t.InputSchema())
 		if err != nil {
-			raw = json.RawMessage("{}")
+			raw = json.RawMessage(`{"type":"object"}`)
 		}
 		toolDefs = append(toolDefs, apiclient.ToolDef{
 			Name:        t.Name(),

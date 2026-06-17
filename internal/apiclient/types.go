@@ -59,8 +59,9 @@ func (ToolResultBlock) contentBlock() {}
 type ToolDef struct {
 	Name        string
 	Description string
-	// InputSchema is the raw JSON Schema object (type:"object") for the tool's
-	// input parameters. Passed directly to the API.
+	// InputSchema is the full self-contained JSON Schema object for the tool's
+	// input (top-level "type":"object", "properties", "required"). The client
+	// extracts the pieces the backend needs.
 	InputSchema json.RawMessage
 }
 

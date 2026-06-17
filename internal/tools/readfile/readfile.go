@@ -37,8 +37,7 @@ func (t *Tool) Description(_ context.Context) string {
 
 // InputSchema returns the JSON schema for ReadFile's input struct.
 func (t *Tool) InputSchema() *jsonschema.Schema {
-	r := &jsonschema.Reflector{RequiredFromJSONSchemaTags: true}
-	return r.Reflect(&Input{})
+	return tool.Schema[Input]()
 }
 
 // ReadOnly returns true — ReadFile never mutates state.
