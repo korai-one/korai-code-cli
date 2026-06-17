@@ -1,6 +1,6 @@
-# AGENTS.md — Ground Rules for the Claude Code Go Port
+# AGENTS.md — Ground Rules for Korai Code CLI
 
-This file governs **every agent and human** that touches code in `cc-go/`. It is
+This file governs **every agent and human** that touches code in `korai-code-cli/`. It is
 not advisory. Where it says "must", a violation blocks merge. The whole point of
 this document is to make a swarm of parallel agents produce **one coherent
 codebase** instead of N divergent ones.
@@ -16,50 +16,50 @@ surrounding code and ask the coordinator — do not invent a new pattern.
 1. **The build is always green.** `make check` must pass before any commit. Never
    commit or merge red. "I'll fix it later" is forbidden — later never comes in a
    swarm, and a red build blocks everyone.
-2. **Port behavior, not syntax.** The TypeScript source (`../src`) is the
-   specification. You are translating *what it does*, not transliterating *how it
-   reads*. Idiomatic Go that preserves behavior beats a literal port that fights
-   the language.
+2. **Build behavior, not syntax.** The architecture described in `HANDOFF.md` is
+   the specification. You are implementing *what it does*, not transliterating any
+   reference syntax. Idiomatic Go that implements the described behavior correctly
+   beats anything that fights the language.
 3. **If it isn't verified, it isn't done.** Code that compiles is not done. Code
    that passes its oracle/unit tests is done (see §6).
 4. **Stay in your lane.** Touch only the module(s) the coordinator assigned you.
    The foundation (§4, §5) is frozen; you may not edit it — propose changes to the
    coordinator instead.
-5. **Read the source before porting.** When unsure how the TS behaves, open the
-   TS file and read it. Cite it (`../src/path/file.ts:line`) in your Go doc comment
-   or PR. Never guess at behavior you can look up.
+5. **Consult the architecture before implementing.** When unsure how a behavior
+   should work, consult `HANDOFF.md` (the authoritative spec). Never guess at
+   behavior you can look up there.
 
 ---
 
 ## 1. Repository & module layout
 
-- **Module path:** `github.com/nevaero/cc-go`
-- **Binary name:** `cc`
+- **Module path:** `github.com/Nevaero/korai-code-cli`
+- **Binary name:** `korai`
 - **Go version:** 1.23+ (uses `log/slog`, range-over-func, modern stdlib). Pinned in `go.mod`.
 - **Layout** (standard Go; `internal/` prevents accidental external coupling):
 
 ```
-cc-go/
+korai-code-cli/
 ├── go.mod
 ├── Makefile                # the single source of truth for build/test/lint
 ├── AGENTS.md               # this file
-├── cmd/cc/                 # main(); Cobra wiring only — no business logic
+├── cmd/korai/              # main(); Cobra wiring only — no business logic
 ├── internal/
-│   ├── engine/             # the agent loop  (TS: QueryEngine.ts, query.ts, query/)
-│   ├── tool/               # Tool interface + registry  (TS: Tool.ts, tools.ts)
-│   ├── tools/              # one package per tool  (TS: tools/<Name>/)
+│   ├── engine/             # the agent loop (conversation/session lifecycle, LLM tool-calling loop)
+│   ├── tool/               # Tool interface + registry
+│   ├── tools/              # one package per tool
 │   │   ├── bash/
 │   │   ├── edit/
 │   │   └── ...
-│   ├── perm/               # permission engine  (TS: hooks/toolPermission, types/permissions.ts)
-│   ├── apiclient/          # Anthropic SDK wrapper  (TS: services/api/)
-│   ├── mcp/                # MCP client  (TS: services/mcp/)
-│   ├── config/             # settings hierarchy + state  (TS: state/, utils/settings/)
-│   ├── tui/                # Bubble Tea UI  (TS: screens/, components/, ink/)
-│   ├── context/            # context assembly  (TS: context.ts)
+│   ├── perm/               # permission engine (allow/ask/deny modes)
+│   ├── apiclient/          # Anthropic SDK wrapper
+│   ├── mcp/                # MCP client
+│   ├── config/             # settings hierarchy + state
+│   ├── tui/                # Bubble Tea UI
+│   ├── context/            # context assembly (working dir, git status, project instructions, date)
 │   └── ...
 ├── pkg/                    # ONLY for genuinely reusable, stable public API (rare; default to internal/)
-└── testdata/               # golden files, VCR cassettes
+└── testdata/               # golden files, test fixtures
 ```
 
 - **Dependency direction (layering) — must not be violated:**
@@ -83,10 +83,10 @@ cc-go/
   package is genuinely a collection (`tools/` dir holds packages, but each package
   is singular: `bash`, `edit`). No `util`/`common`/`helpers` grab-bag packages —
   name by responsibility.
-- **TS → Go name mapping:** drop the `Tool`/`Service` suffix that becomes the
+- **Name mapping:** drop the `Tool`/`Service` suffix that becomes the
   package name. `FileEditTool` → package `edit`, constructor `edit.New`, type
   `edit.Tool`. `MCPConnectionManager` → `mcp.ConnectionManager`. Record the
-  mapping in the package doc comment with the TS source path.
+  conceptual mapping in the package doc comment.
 - **Files:** one cohesive concern per file, `snake_case.go`. Tests are
   `*_test.go` beside the code. No `manager.go`/`utils.go` dumping grounds.
 - **Errors:** sentinels are `ErrXxx`; error types are `XxxError`.
@@ -113,12 +113,12 @@ cc-go/
   `context.Context` in a struct.
 - **Concurrency:**
   - Use `golang.org/x/sync/errgroup` for fan-out; channels for streaming.
-  - **No shared mutable global state.** The TS `AppState` singleton becomes
+  - **No shared mutable global state.** All config, permissions, and clients are
     explicit dependencies passed in. If two goroutines touch a value, it is either
     immutable, channel-owned, or mutex-guarded — and the guard is documented.
-  - The streaming tool executor (TS `StreamingToolExecutor`) is the canonical
-    pattern: read-only/concurrency-safe tools run in parallel, mutating tools run
-    serially, every call is permission-gated. Reuse it; do not reinvent.
+  - The streaming tool executor is the canonical pattern: read-only/concurrency-safe
+    tools run in parallel, mutating tools run serially, every call is
+    permission-gated. Reuse it; do not reinvent.
   - Run `go test -race` (it's in `make check`); a data race is a merge block.
 - **No globals for config/permissions/clients.** Inject them. A function's
   dependencies must be visible in its signature or its receiver.
@@ -128,8 +128,8 @@ cc-go/
 - **Dependencies:** the approved set is fixed (§ end). Adding any new third-party
   module requires coordinator approval **before** you import it. Prefer stdlib.
 - **Comments:** doc comment on every exported symbol, starting with its name.
-  Match the comment density of the package. Explain *why*, not *what*. Reference
-  the TS source for non-obvious ported behavior.
+  Match the comment density of the package. Explain *why*, not *what*. Call out
+  non-obvious design decisions with a brief justification.
 
 ---
 
@@ -173,12 +173,11 @@ the coordinator owns it.
 package tool
 
 // Tool is the contract every agent-invokable action implements.
-// TS origin: ../src/Tool.ts
 type Tool interface {
     // Name is the stable identifier the model calls (e.g. "Bash", "Edit").
     Name() string
 
-    // Description returns the prompt text shown to the model. TS: prompt.ts
+    // Description returns the prompt text shown to the model.
     Description(ctx context.Context) string
 
     // InputSchema returns the JSON schema generated from the input struct.
@@ -196,23 +195,22 @@ type Tool interface {
     // others. Default false. Read-only tools are usually safe.
     ConcurrencySafe() bool
 
-    // CheckPermission returns allow/ask/deny BEFORE Execute. TS: checkPermissions.
+    // CheckPermission returns allow/ask/deny BEFORE Execute is called.
     CheckPermission(ctx context.Context, raw json.RawMessage, mode perm.Mode) perm.Decision
 }
 ```
 
 Rules for adding a tool (this is the swarm's hot path):
 
-- One package under `internal/tools/<name>/`. Mirror the TS directory's split:
-  execution, prompt, validation, permission — separate files, same as
-  `../src/tools/<Name>/`.
+- One package under `internal/tools/<name>/`. Split by concern: execution,
+  prompt, validation, permission — separate files within the package.
 - Define a typed input struct with `json` + `jsonschema` tags. Validate it
   explicitly at the top of `Execute`; return a descriptive error on bad input.
 - Register via the registry's `Register(New())` in an `init()` or an explicit
   registration list owned by the coordinator (no magic global mutation across
   packages — follow the existing registration file's pattern).
 - Fail-closed: `ReadOnly`/`ConcurrencySafe` default to `false`. Only set `true`
-  when you have read the TS and confirmed it.
+  when you have explicitly verified the tool cannot mutate state.
 - Rendering (how a tool's call/result shows in the TUI) lives in `internal/tui`,
   not in the tool package — the tool returns structured `Result`, the TUI renders.
 
@@ -239,14 +237,14 @@ A commit that breaks any step is reverted, no discussion.
 - **Unit tests** for all logic with branches (validation, permission decisions,
   parsing, layout math). Table-driven. stdlib `testing` + `google/go-cmp` for
   comparisons. **`testify` is banned** — one assertion style across the swarm.
-- **Oracle/golden tests for ports** — this is how we prove behavioral parity
+- **Golden tests for engine/tool behavior** — this is how we prove correctness
   without trusting the LLM:
-  - The TS `vcr.ts` fixture mechanism is the oracle. Capture TS request/response
-    and tool-execution fixtures into `testdata/cassettes/`.
-  - The Go port replays the same inputs and must reproduce the recorded output
-    (golden file in `testdata/golden/`). Diff via `go-cmp`; update goldens only
-    with a deliberate `-update` flag and a justification in the PR.
-  - No port of engine/tool behavior is "done" without an oracle test.
+  - Capture hand-crafted or recorded request/response and tool-execution fixtures
+    into `testdata/fixtures/`.
+  - The implementation replays the same inputs and must reproduce the expected
+    output (golden file in `testdata/golden/`). Diff via `go-cmp`; update goldens
+    only with a deliberate `-update` flag and a justification in the PR.
+  - No engine/tool behavior is "done" without a golden test.
 - **TUI tests:** use `teatest` (Bubble Tea's harness) for golden-frame snapshots
   of key screens; logic must live in the model and be unit-testable without a
   terminal.
@@ -259,7 +257,7 @@ A commit that breaks any step is reverted, no discussion.
   single-purpose** (one tool, one service, one screen). Giant PRs are rejected.
 - The coordinator reviews against this checklist and blocks on any miss:
   builds + `make check` green · stays in assigned lane · Tool contract unchanged ·
-  oracle/unit tests present and passing · TS source cited for ported behavior ·
+  golden/unit tests present and passing · behavior matches HANDOFF.md spec ·
   no new deps without prior approval · no globals/cycles · errors wrapped · ctx
   honored.
 - CI runs `make check` on every push; red CI = not mergeable, full stop.
@@ -267,28 +265,28 @@ A commit that breaks any step is reverted, no discussion.
 **Commits:**
 
 - Imperative, scoped subject: `engine: stream tool_use blocks as they arrive`.
-- Reference the TS source in the body when porting.
 - Small, frequent, each independently green.
 
 ---
 
-## 7. Porting methodology (TS → Go)
+## 7. Implementation methodology
 
-- **Read the TS first, cite it, then port the behavior.** Put
-  `// Port of ../src/tools/BashTool/bashSecurity.ts` at the top of the file.
-- **Faithful by default; deviate only deliberately.** If Go idiom forces a
-  behavioral change, call it out explicitly in a comment and the PR ("TS retried
-  inline; Go uses errgroup with the same 4-attempt backoff"). Silent behavior
-  drift is the worst failure mode.
-- **Async → concurrency:** `async/await` becomes synchronous Go with `ctx`;
-  `Promise.all` becomes `errgroup`; event streams become channels.
-- **Zod → struct + explicit validation + generated schema** (§4.4).
-- **React hooks → model fields + `tea.Cmd`** (§4.3). Do not try to recreate hooks.
-- **Do NOT port (skip list — confirm with coordinator before porting anything here):**
-  analytics/telemetry internals, `vcr`/mock test infra (we reuse the *fixtures*,
-  not the code), the CCR cloud/`bridge`/`remote`/`server`/`upstreamproxy` infra
-  (unless cloud sessions are explicitly in scope), JS plugins, the auto-updater,
-  and any `USER_TYPE === 'ant'` internal-only path that isn't on the keep-list.
+- **Spec first, then implement.** Read the relevant section of `HANDOFF.md` before
+  writing code. Implement what the architecture describes, not what any reference
+  reads. Idiomatic Go that correctly implements the behavior is always right.
+- **Faithful by default; deviate only deliberately.** If Go idiom or constraints
+  force a behavioral change, call it out explicitly in a comment and the PR
+  (e.g. "uses errgroup with 4-attempt backoff instead of inline retry"). Silent
+  drift from the spec is the worst failure mode.
+- **Concurrency idioms:** event-driven async becomes synchronous Go with `ctx`;
+  fan-out becomes `errgroup`; event streams become channels.
+- **Schema + validation:** use Go structs → `invopop/jsonschema` for schemas;
+  explicit validation code in `Execute` (§4.4). No reflection validators.
+- **TUI state:** UI state lives in Bubble Tea model fields + `tea.Cmd`s (§4.3).
+  Do not attempt to recreate React hook patterns.
+- **Out of scope (confirm with coordinator before building):**
+  analytics/telemetry, the CCR cloud/bridge/remote/server infra (unless cloud
+  sessions are explicitly in scope), the auto-updater, inline image rendering.
 
 ---
 
@@ -316,11 +314,10 @@ A commit that breaks any step is reverted, no discussion.
 
 A unit (tool/service/screen) is done when **all** are true:
 
-- [ ] Behavior matches the cited TS source (or deviations are documented).
+- [ ] Behavior matches the architecture described in `HANDOFF.md` (or deviations are documented).
 - [ ] `make check` passes locally (build, vet, lint, race tests).
-- [ ] Unit tests cover the branching logic; an oracle/golden test proves parity
-      for ported behavior.
-- [ ] Exported symbols have doc comments; TS source path referenced.
+- [ ] Unit tests cover the branching logic; a golden test verifies engine/tool behavior.
+- [ ] Exported symbols have doc comments; non-obvious design decisions explained.
 - [ ] Stays within assigned module; no edits to frozen contracts; no import cycles.
 - [ ] No new dependencies beyond the approved set without coordinator sign-off.
 - [ ] Errors wrapped, `ctx` honored, no globals, no leftover debug printing.
