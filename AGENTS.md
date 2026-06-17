@@ -167,6 +167,27 @@ not work around it locally.
    same line or the line immediately above. These mark the exact swap points when
    the Korai P2P inference SDK replaces the Anthropic SDK. Missing annotations are
    a merge block.
+9. **`internal/apiclient` owns its own types — no SDK types cross the boundary.**
+   `anthropic.*` types (messages, content blocks, tool use, events, etc.) must
+   never appear in the signature of any symbol exported from `internal/apiclient`.
+   Define equivalent types in `internal/apiclient` (e.g. `apiclient.Request`,
+   `apiclient.Event`, `apiclient.ToolCall`) and convert at the boundary inside the
+   package. This is the anti-corruption layer that lets the SDK be swapped without
+   touching `engine`, `tool`, or any other package.
+10. **`apiclient` exposes a `Client` interface, not a concrete struct.** The
+    interface is the only thing `engine` depends on:
+    ```go
+    // Client is the inference boundary. engine calls this; nothing below it
+    // knows which network backend is in use.
+    type Client interface {
+        Complete(ctx context.Context, req Request) (<-chan Event, error)
+    }
+    ```
+    `AnthropicClient` implements `Client` today using `anthropic-sdk-go` (all call
+    sites annotated `// TODO KORAI SDK`). `KoraiClient` will implement the same
+    interface against the Korai P2P SDK. A `StranglerClient` can wrap both and
+    route via a config flag during the transition. `engine` is wired to `Client` at
+    construction time and never sees the concrete type.
 
 ---
 
