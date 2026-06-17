@@ -161,6 +161,12 @@ not work around it locally.
    `bypassPermissions`) live in `internal/perm` and are passed to the engine.
 7. **The Anthropic SDK is `anthropic-sdk-go` (official).** All API access goes
    through `internal/apiclient`; no package calls the SDK directly.
+8. **`// TODO KORAI SDK` annotation.** Every call site inside `internal/apiclient`
+   that directly invokes an `anthropic-sdk-go` method (e.g. `client.Messages.New`,
+   `stream.Next`, `stream.Event`) must have a `// TODO KORAI SDK` comment on the
+   same line or the line immediately above. These mark the exact swap points when
+   the Korai P2P inference SDK replaces the Anthropic SDK. Missing annotations are
+   a merge block.
 
 ---
 
