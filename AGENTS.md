@@ -314,6 +314,13 @@ A commit that breaks any step is reverted, no discussion.
 - **Out of scope (confirm with coordinator before building):**
   analytics/telemetry, the CCR cloud/bridge/remote/server infra (unless cloud
   sessions are explicitly in scope), the auto-updater, inline image rendering.
+- **Deferred services (Phase 5):**
+  - **OAuth login** — authentication belongs to the Korai inference SDK behind
+    the `apiclient.Client` boundary (the strangler-fig seam, §4 items 8–10). A
+    provider-specific OAuth flow is not built until that backend is chosen.
+  - **LSP** — per-language diagnostics are a large side-quest off the MVP path;
+    defer until requested. When built, it follows the MCP pattern: a client in
+    `internal/lsp` that adapts diagnostics, never an import from upper layers.
 
 ---
 

@@ -15,12 +15,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	appctx "github.com/Nevaero/korai-code-cli/internal/context"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/prompt"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools"
 	"github.com/Nevaero/korai-code-cli/internal/tui"
 )
 
@@ -31,12 +27,16 @@ func main() {
 	}
 }
 
-// runOptions holds the resolved CLI flags for a headless run.
+// runOptions holds the resolved CLI flags for a run. The *Set fields record
+// whether the user passed the flag explicitly, so config-file values can fill
+// in the rest.
 type runOptions struct {
-	prompt   string
-	model    string
-	permMode perm.Mode
-	autoYes  bool
+	prompt      string
+	model       string
+	modelSet    bool
+	permMode    perm.Mode
+	permModeSet bool
+	autoYes     bool
 }
 
 func rootCmd() *cobra.Command {
@@ -59,10 +59,12 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			opts := runOptions{
-				prompt:   printPrompt,
-				model:    model,
-				permMode: mode,
-				autoYes:  autoYes,
+				prompt:      printPrompt,
+				model:       model,
+				modelSet:    cmd.Flags().Changed("model"),
+				permMode:    mode,
+				permModeSet: cmd.Flags().Changed("permission-mode"),
+				autoYes:     autoYes,
 			}
 			if printPrompt != "" {
 				setupLogging(debug, os.Stderr)
@@ -108,22 +110,14 @@ func setupLogging(debug bool, w io.Writer) {
 // runPrint drives the engine in headless mode, printing streamed text to stdout.
 // SIGINT/SIGTERM cancel the context so an in-flight turn stops cleanly.
 func runPrint(ctx context.Context, opts runOptions) error {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY is not set")
-	}
-
-	wd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client := apiclient.NewAnthropicClient(apiKey, opts.model)
-	registry := tool.NewRegistry()
-	tools.RegisterAll(registry)
+	sess, err := assemble(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer sess.close()
 
 	// Headless runs have no interactive prompt: an "ask" decision is denied by
 	// default (safe), or auto-approved when --yes is set.
@@ -131,17 +125,16 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	if opts.autoYes {
 		asker = perm.AllowAsker{}
 	}
-	permEngine := perm.NewEngine(opts.permMode, perm.Rules{}, asker)
+	permEngine := perm.NewEngine(sess.mode, sess.rules, asker)
 
-	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: wd})
-	system := prompt.Compose(appctx.Build(ctx, wd))
+	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps)
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
 	}
 
-	slog.Debug("starting headless turn", "model", opts.model, "workdir", wd, "permission_mode", opts.permMode.String())
+	slog.Debug("starting headless turn", "permission_mode", sess.mode.String())
 
-	for evt := range eng.Run(ctx, messages, system) {
+	for evt := range eng.Run(ctx, messages, sess.system) {
 		switch v := evt.(type) {
 		case engine.TextEvent:
 			fmt.Print(v.Text)
@@ -162,26 +155,17 @@ func runPrint(ctx context.Context, opts runOptions) error {
 // runTUI launches the interactive Bubble Tea REPL. Permission prompts are
 // resolved interactively by the TUI's own Asker, so --yes does not apply here.
 func runTUI(ctx context.Context, opts runOptions) error {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY is not set")
-	}
-
-	wd, err := os.Getwd()
+	sess, err := assemble(ctx, opts)
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
-
-	client := apiclient.NewAnthropicClient(apiKey, opts.model)
-	registry := tool.NewRegistry()
-	tools.RegisterAll(registry)
+	defer sess.close()
 
 	asker := tui.NewAsker()
-	permEngine := perm.NewEngine(opts.permMode, perm.Rules{}, asker)
-	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: wd})
-	system := prompt.Compose(appctx.Build(ctx, wd))
+	permEngine := perm.NewEngine(sess.mode, sess.rules, asker)
+	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps)
 
-	model := tui.New(eng, asker, system)
+	model := tui.New(eng, asker, sess.system)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
