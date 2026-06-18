@@ -27,15 +27,23 @@ const (
 
 // Engine drives the LLM tool-calling loop for a single conversation turn.
 type Engine struct {
-	client    apiclient.Client
-	registry  *tool.Registry
-	perm      *perm.Engine
-	deps      tool.Deps
-	hooks     HookFunc
-	models    *apiclient.ModelSelector
-	usage     UsageRecorder
-	sysSuffix func() string
+	client     apiclient.Client
+	registry   *tool.Registry
+	perm       *perm.Engine
+	deps       tool.Deps
+	hooks      HookFunc
+	models     *apiclient.ModelSelector
+	usage      UsageRecorder
+	sysSuffix  func() string
+	compactFn  CompactFunc
+	compactMax int
+	estimate   func([]apiclient.Message) int
 }
+
+// CompactFunc summarizes a conversation into a shorter one. It is the seam the
+// compaction service plugs into; the engine calls it before a turn when the
+// history grows past the auto-compact threshold.
+type CompactFunc func(ctx context.Context, messages []apiclient.Message) ([]apiclient.Message, error)
 
 // UsageRecorder receives the token usage of each model call along with the model
 // that produced it. It is the seam the cost tracker plugs into; usage flows as
@@ -68,6 +76,17 @@ func WithUsageRecorder(r UsageRecorder) Option {
 // return adds nothing.
 func WithSystemSuffix(fn func() string) Option {
 	return func(e *Engine) { e.sysSuffix = fn }
+}
+
+// WithAutoCompact enables automatic compaction: before a turn, if the history's
+// estimated token count exceeds maxTokens, fn is called to summarize it. A nil
+// fn or non-positive maxTokens disables auto-compaction.
+func WithAutoCompact(maxTokens int, estimate func([]apiclient.Message) int, fn CompactFunc) Option {
+	return func(e *Engine) {
+		e.compactMax = maxTokens
+		e.compactFn = fn
+		e.estimate = estimate
+	}
 }
 
 // New creates an Engine with the given inference client, tool registry,
@@ -118,6 +137,7 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	copy(history, messages)
 
 	e.fireHook(ctx, HookSessionStart, "", nil)
+	history = e.maybeCompact(ctx, history, ch)
 
 	for {
 		req := e.buildRequest(ctx, history, system)
@@ -163,6 +183,26 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 			apiclient.Message{Role: apiclient.RoleUser, Content: results},
 		)
 	}
+}
+
+// maybeCompact summarizes history before a turn when it has grown past the
+// configured token threshold. On failure it logs and keeps the original history
+// (fail-open: a compaction error must not abort the turn).
+func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, ch chan<- Event) []apiclient.Message {
+	if e.compactFn == nil || e.estimate == nil || e.compactMax <= 0 {
+		return history
+	}
+	if e.estimate(history) <= e.compactMax {
+		return history
+	}
+	before := len(history)
+	compacted, err := e.compactFn(ctx, history)
+	if err != nil {
+		slog.Warn("auto-compaction failed; continuing without it", "error", err)
+		return history
+	}
+	send(ch, CompactedEvent{Before: before, After: len(compacted)})
+	return compacted
 }
 
 // turnResult captures what a single model turn produced.

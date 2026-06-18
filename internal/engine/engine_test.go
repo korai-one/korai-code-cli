@@ -174,3 +174,73 @@ func TestPreToolUseHookBlocks(t *testing.T) {
 		t.Errorf("expected SessionStart to fire first, got %v", fired)
 	}
 }
+
+// TestAutoCompactFires verifies the engine compacts the history before a turn
+// when the estimate exceeds the threshold, emitting a CompactedEvent.
+func TestAutoCompactFires(t *testing.T) {
+	t.Parallel()
+
+	client := &mockClient{turns: [][]apiclient.Event{
+		{
+			apiclient.TextDeltaEvent{Text: "done"},
+			apiclient.MessageCompleteEvent{StopReason: "end_turn"},
+		},
+	}}
+	registry := tool.NewRegistry()
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
+
+	var compactCalled bool
+	compactFn := func(_ context.Context, msgs []apiclient.Message) ([]apiclient.Message, error) {
+		compactCalled = true
+		return msgs[len(msgs)-1:], nil // keep only the last message
+	}
+	estimate := func([]apiclient.Message) int { return 1000 } // always over threshold
+
+	eng := engine.New(client, registry, permEngine, tool.Deps{},
+		engine.WithAutoCompact(100, estimate, compactFn))
+
+	in := []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "a"}}},
+		{Role: apiclient.RoleAssistant, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "b"}}},
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "c"}}},
+	}
+
+	var compacted *engine.CompactedEvent
+	for evt := range eng.Run(context.Background(), in, "") {
+		if c, ok := evt.(engine.CompactedEvent); ok {
+			compacted = &c
+		}
+	}
+	if !compactCalled {
+		t.Error("compact function should have been called")
+	}
+	if compacted == nil || compacted.Before != 3 || compacted.After != 1 {
+		t.Errorf("CompactedEvent = %+v, want before=3 after=1", compacted)
+	}
+}
+
+// TestAutoCompactSkippedUnderThreshold verifies no compaction below the threshold.
+func TestAutoCompactSkippedUnderThreshold(t *testing.T) {
+	t.Parallel()
+
+	client := &mockClient{turns: [][]apiclient.Event{
+		{apiclient.TextDeltaEvent{Text: "ok"}, apiclient.MessageCompleteEvent{StopReason: "end_turn"}},
+	}}
+	eng := engine.New(client, tool.NewRegistry(),
+		perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{}),
+		tool.Deps{},
+		engine.WithAutoCompact(100, func([]apiclient.Message) int { return 10 },
+			func(_ context.Context, m []apiclient.Message) ([]apiclient.Message, error) {
+				t.Error("compact must not run under threshold")
+				return m, nil
+			}))
+
+	events := eng.Run(context.Background(), []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "hi"}}},
+	}, "")
+	for evt := range events {
+		if _, ok := evt.(engine.CompactedEvent); ok {
+			t.Error("no CompactedEvent expected under threshold")
+		}
+	}
+}

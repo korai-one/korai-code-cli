@@ -37,8 +37,13 @@ type ErrorEvent struct{ Err error }
 // full conversation history after the turn, for carrying context forward.
 type DoneEvent struct{ Messages []apiclient.Message }
 
+// CompactedEvent signals that the conversation was auto-compacted before a turn.
+// Before and After are the message counts.
+type CompactedEvent struct{ Before, After int }
+
 func (TextEvent) engineEvent()       {}
 func (ToolStartEvent) engineEvent()  {}
 func (ToolResultEvent) engineEvent() {}
 func (ErrorEvent) engineEvent()      {}
 func (DoneEvent) engineEvent()       {}
+func (CompactedEvent) engineEvent()  {}

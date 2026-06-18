@@ -82,3 +82,14 @@ func TestCompactEmptySummaryErrors(t *testing.T) {
 		t.Error("expected error on empty summary")
 	}
 }
+
+func TestEstimateTokens(t *testing.T) {
+	t.Parallel()
+	msgs := []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "12345678"}}},      // 8 chars
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.ToolResultBlock{Content: "1234"}}}, // 4 chars
+	}
+	if got := compact.EstimateTokens(msgs); got != 3 { // 12 chars / 4
+		t.Errorf("EstimateTokens = %d, want 3", got)
+	}
+}

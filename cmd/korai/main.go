@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/compact"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tui"
@@ -160,7 +161,8 @@ func runPrint(ctx context.Context, opts runOptions) error {
 
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
-		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)))
+		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
 	}
@@ -171,6 +173,8 @@ func runPrint(ctx context.Context, opts runOptions) error {
 		switch v := evt.(type) {
 		case engine.TextEvent:
 			fmt.Print(v.Text)
+		case engine.CompactedEvent:
+			fmt.Fprintf(os.Stderr, "[auto-compacted: %d → %d messages]\n", v.Before, v.After)
 		case engine.ToolStartEvent:
 			fmt.Fprintf(os.Stderr, "\n[tool: %s]\n", v.Name)
 		case engine.ToolResultEvent:
@@ -199,7 +203,8 @@ func runTUI(ctx context.Context, opts runOptions) error {
 	permEngine := perm.NewEngine(sess.modes, sess.rules, asker)
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
-		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)))
+		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 
 	model := tui.New(eng, asker, sess.system, sess.commands).
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover)

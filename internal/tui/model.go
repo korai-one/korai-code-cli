@@ -379,6 +379,8 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.addEntry(kindToolResult, oneLine(ev.Result.Content))
 		}
+	case engine.CompactedEvent:
+		m.addEntry(kindInfo, fmt.Sprintf("auto-compacted context: %d → %d messages", ev.Before, ev.After))
 	case engine.DoneEvent:
 		m.history = ev.Messages
 		m.busy = false

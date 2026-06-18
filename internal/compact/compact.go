@@ -14,6 +14,31 @@ import (
 // DefaultKeepRecent is how many trailing messages are preserved verbatim.
 const DefaultKeepRecent = 4
 
+// DefaultThreshold is the estimated-token size above which auto-compaction
+// triggers. Chosen well under typical context windows to leave room for the
+// next turn's output.
+const DefaultThreshold = 120_000
+
+// EstimateTokens returns a rough token estimate for a conversation. It is a
+// cheap heuristic (≈4 characters per token over all content), good enough to
+// decide when to compact; exact accounting comes from the backend's usage.
+func EstimateTokens(messages []apiclient.Message) int {
+	chars := 0
+	for _, m := range messages {
+		for _, b := range m.Content {
+			switch v := b.(type) {
+			case apiclient.TextBlock:
+				chars += len(v.Text)
+			case apiclient.ToolCallBlock:
+				chars += len(v.Input) + len(v.Name)
+			case apiclient.ToolResultBlock:
+				chars += len(v.Content)
+			}
+		}
+	}
+	return chars / 4
+}
+
 const compactSystem = `You are summarizing a coding-assistant conversation to ` +
 	`save context. Produce a concise summary that preserves: the user's goals, ` +
 	`key decisions, files read or changed, and any open tasks. Be factual and brief.`
