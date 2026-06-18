@@ -23,6 +23,8 @@ const (
 	SubmitPrompt
 	// CompactHistory asks the host to summarize and shrink the conversation.
 	CompactHistory
+	// ResumeSession asks the host to load the saved session named in Result.Text.
+	ResumeSession
 )
 
 // Result is what a command returns to the host.

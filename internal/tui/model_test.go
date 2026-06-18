@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -526,5 +527,74 @@ func TestPlanApproverRoundTrip(t *testing.T) {
 	got := <-done
 	if got.err != nil || !got.ok {
 		t.Errorf("ApprovePlan = (%v, %v), want (true, nil)", got.ok, got.err)
+	}
+}
+
+func TestResumeLoadsSession(t *testing.T) {
+	t.Parallel()
+	reg := command.NewRegistry()
+	reg.Register(command.NewResumeCommand(func() string { return "list" }))
+
+	loaded := []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "prior question"}}},
+		{Role: apiclient.RoleAssistant, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "prior answer"}}},
+	}
+	loader := func(_ string) ([]apiclient.Message, time.Time, error) {
+		return loaded, time.Now(), nil
+	}
+
+	m := New(fakeRunner{}, NewAsker(), "system", reg).WithResumeLoader(loader)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+	m.input.SetValue("/resume sess-1")
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+	if cmd == nil {
+		t.Fatal("expected a command to load the session")
+	}
+	tm, _ = m.Update(cmd())
+	m = tm.(Model)
+
+	if len(m.history) != 2 {
+		t.Errorf("history len = %d, want 2 after resume", len(m.history))
+	}
+	if m.sessionID != "sess-1" {
+		t.Errorf("sessionID = %q, want sess-1", m.sessionID)
+	}
+	// The prior conversation should be visible in the transcript.
+	var sawPrior bool
+	for _, e := range m.entries {
+		if e.text == "prior question" {
+			sawPrior = true
+		}
+	}
+	if !sawPrior {
+		t.Error("resumed transcript should show the prior conversation")
+	}
+}
+
+func TestSaveOnDone(t *testing.T) {
+	t.Parallel()
+	var saved []apiclient.Message
+	saver := func(_ string, _ time.Time, msgs []apiclient.Message) {
+		saved = msgs
+	}
+	m := New(fakeRunner{}, NewAsker(), "system", testCommands()).
+		WithSaver(saver).WithSession("s1", time.Now(), nil)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	hist := []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "hi"}}},
+	}
+	dummy := make(chan engine.Event)
+	_, cmd := m.Update(engineEventMsg{event: engine.DoneEvent{Messages: hist}, ch: dummy})
+	if cmd == nil {
+		t.Fatal("DoneEvent should return a save command")
+	}
+	cmd() // run the save
+	if len(saved) != 1 {
+		t.Errorf("saved %d messages, want 1", len(saved))
 	}
 }

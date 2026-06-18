@@ -62,3 +62,21 @@ func TestPlanCommand(t *testing.T) {
 		t.Errorf("second toggle = %+v, want default", res)
 	}
 }
+
+func TestResumeCommand(t *testing.T) {
+	t.Parallel()
+	cmd := command.NewResumeCommand(func() string { return "session list here" })
+	if cmd.Name() != "resume" {
+		t.Errorf("name = %q, want resume", cmd.Name())
+	}
+
+	res, _ := cmd.Run("")
+	if res.Action != command.ShowText || !strings.Contains(res.Text, "session list") {
+		t.Errorf("no-arg = %+v, want list", res)
+	}
+
+	res, _ = cmd.Run("abc-123")
+	if res.Action != command.ResumeSession || res.Text != "abc-123" {
+		t.Errorf("with-id = %+v, want ResumeSession(abc-123)", res)
+	}
+}

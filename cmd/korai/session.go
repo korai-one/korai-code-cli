@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
@@ -20,6 +21,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/memory"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/prompt"
+	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/skill"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 	"github.com/Nevaero/korai-code-cli/internal/tools"
@@ -44,6 +46,12 @@ type assembled struct {
 	system    string
 	deps      tool.Deps
 	closers   []func() error
+
+	sessionID      string
+	sessionStart   time.Time
+	initialHistory []apiclient.Message
+	saver          func(id string, created time.Time, msgs []apiclient.Message)
+	resumeLoad     func(id string) ([]apiclient.Message, time.Time, error)
 }
 
 // availableModels is the set the /model command switches between. The active
@@ -132,10 +140,29 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		return compact.Compact(cctx, client, history, compact.DefaultKeepRecent)
 	}
 
+	// Session persistence: resolve the session to use (resume / continue / new).
+	sessStore := session.NewStore(sessionsDir(home))
+	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
+	saver := func(id string, created time.Time, msgs []apiclient.Message) {
+		if err := sessStore.Save(session.Record{
+			ID: id, Created: created, Updated: time.Now(),
+			CWD: wd, Model: models.Get(), Messages: msgs,
+		}); err != nil {
+			slog.Warn("saving session", "error", err)
+		}
+	}
+	resumeLoad := func(id string) ([]apiclient.Message, time.Time, error) {
+		rec, err := sessStore.Load(id)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+		return rec.Messages, rec.Created, nil
+	}
+
 	return &assembled{
 		client:    client,
 		registry:  registry,
-		commands:  buildCommands(home, wd, registry, models, modes, costTracker),
+		commands:  buildCommands(home, wd, registry, models, modes, costTracker, sessStore),
 		models:    models,
 		modes:     modes,
 		cost:      costTracker,
@@ -145,13 +172,88 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		system:    system,
 		deps:      deps,
 		closers:   closers,
+
+		sessionID:      sessionID,
+		sessionStart:   sessionStart,
+		initialHistory: initialHistory,
+		saver:          saver,
+		resumeLoad:     resumeLoad,
 	}, nil
+}
+
+// sessionsDir returns the directory where sessions are stored.
+func sessionsDir(home string) string {
+	return filepath.Join(home, ".korai", "sessions")
+}
+
+// resolveSession picks the session to use: an explicit --resume id, the latest
+// session for the directory with --continue, or a fresh session otherwise. On
+// any resume failure it logs and falls back to a new session.
+func resolveSession(store *session.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
+	switch {
+	case opts.resumeID != "":
+		rec, err := store.Load(opts.resumeID)
+		if err == nil {
+			return rec.ID, rec.Created, rec.Messages
+		}
+		slog.Warn("could not resume session; starting fresh", "id", opts.resumeID, "error", err)
+	case opts.cont:
+		if rec, ok, err := store.Latest(wd); err == nil && ok {
+			return rec.ID, rec.Created, rec.Messages
+		}
+	}
+	return session.NewID(), time.Now(), nil
+}
+
+// formatSessions renders the saved-session list for /resume.
+func formatSessions(store *session.Store, wd string) string {
+	records, err := store.List()
+	if err != nil {
+		return "could not list sessions: " + err.Error()
+	}
+	if len(records) == 0 {
+		return "No saved sessions yet."
+	}
+	var b strings.Builder
+	b.WriteString("Saved sessions (newest first) — /resume <id> to load:")
+	shown := 0
+	for _, r := range records {
+		if r.CWD != wd {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %s  %s  (%d msgs)  %s",
+			r.ID, r.Updated.Local().Format("2006-01-02 15:04"), len(r.Messages), firstUserText(r.Messages))
+		shown++
+	}
+	if shown == 0 {
+		return "No saved sessions for this directory yet."
+	}
+	return b.String()
+}
+
+// firstUserText returns a short snippet of the first user message.
+func firstUserText(msgs []apiclient.Message) string {
+	for _, m := range msgs {
+		if m.Role != apiclient.RoleUser {
+			continue
+		}
+		for _, blk := range m.Content {
+			if tb, ok := blk.(apiclient.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
+				s := strings.TrimSpace(tb.Text)
+				if len(s) > 50 {
+					s = s[:50] + "…"
+				}
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore *session.Store) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -165,6 +267,7 @@ func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.M
 	reg.Register(command.NewCostCommand(costTracker.Summary))
 	reg.Register(command.NewCompactCommand())
 	reg.Register(command.NewPlanCommand(func() string { return togglePlan(modes) }))
+	reg.Register(command.NewResumeCommand(func() string { return formatSessions(sessStore, wd) }))
 
 	// Bundled skills first, then discovered skills (which override by name).
 	if builtins, err := skill.Builtins(); err != nil {

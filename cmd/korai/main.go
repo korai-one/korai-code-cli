@@ -57,6 +57,8 @@ type runOptions struct {
 	permMode    perm.Mode
 	permModeSet bool
 	autoYes     bool
+	cont        bool
+	resumeID    string
 }
 
 func rootCmd() *cobra.Command {
@@ -66,6 +68,8 @@ func rootCmd() *cobra.Command {
 		debug       bool
 		permModeStr string
 		autoYes     bool
+		cont        bool
+		resumeID    string
 	)
 
 	root := &cobra.Command{
@@ -88,6 +92,8 @@ func rootCmd() *cobra.Command {
 				permMode:    mode,
 				permModeSet: cmd.Flags().Changed("permission-mode"),
 				autoYes:     autoYes,
+				cont:        cont,
+				resumeID:    resumeID,
 			}
 			if printMode {
 				prompt, perr := resolvePrompt(args)
@@ -124,6 +130,10 @@ func rootCmd() *cobra.Command {
 		"permission mode: default | plan | acceptEdits | bypassPermissions")
 	root.Flags().BoolVar(&autoYes, "yes", false,
 		"auto-approve prompts that would otherwise be denied in headless mode")
+	root.Flags().BoolVarP(&cont, "continue", "c", false,
+		"resume the most recent session in this directory")
+	root.Flags().StringVar(&resumeID, "resume", "",
+		"resume a saved session by id")
 
 	return root
 }
@@ -163,12 +173,16 @@ func runPrint(ctx context.Context, opts runOptions) error {
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
-	messages := []apiclient.Message{
-		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
-	}
+	// Continue from any resumed history, then add this prompt.
+	messages := make([]apiclient.Message, 0, len(sess.initialHistory)+1)
+	messages = append(messages, sess.initialHistory...)
+	messages = append(messages, apiclient.Message{
+		Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}},
+	})
 
 	slog.Debug("starting headless turn", "permission_mode", sess.modes.Get().String())
 
+	var finalHistory []apiclient.Message
 	for evt := range eng.Run(ctx, messages, sess.system) {
 		switch v := evt.(type) {
 		case engine.TextEvent:
@@ -181,11 +195,16 @@ func runPrint(ctx context.Context, opts runOptions) error {
 			if v.Result.IsError {
 				fmt.Fprintf(os.Stderr, "[tool error: %s]\n", v.Result.Content)
 			}
+		case engine.DoneEvent:
+			finalHistory = v.Messages
 		case engine.ErrorEvent:
 			return v.Err
 		}
 	}
 	fmt.Println()
+	if finalHistory != nil {
+		sess.saver(sess.sessionID, sess.sessionStart, finalHistory)
+	}
 	return nil
 }
 
@@ -207,7 +226,9 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 
 	model := tui.New(eng, asker, sess.system, sess.commands).
-		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover)
+		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
+		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
+		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)

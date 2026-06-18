@@ -133,9 +133,18 @@ suffix (`engine.WithSystemSuffix`) tells the agent to investigate then call the
 `ExitPlanMode` tool, which presents a plan for approval (interactive in the TUI,
 `--yes` headless) and on approval switches to acceptEdits so the work proceeds.
 
+### Sessions (`internal/session`) & resume
+
+Conversations auto-save to `~/.korai/sessions/<id>.json` after every turn (the
+`ContentBlock` interface is persisted via a tagged DTO, keeping `apiclient`
+free of JSON concerns). `--continue`/`-c` resumes the latest session for the
+cwd, `--resume <id>` a specific one, and `/resume` lists/loads them live. The
+engine auto-compacts (`engine.WithAutoCompact`) when history grows past
+`compact.DefaultThreshold` so long sessions don't blow the context window.
+
 ### Slash commands & skills
 
-Built-ins: `/help`, `/clear`, `/quit`, `/tools`, `/model`, `/cost`, `/compact`, `/plan`.
+Built-ins: `/help`, `/clear`, `/quit`, `/tools`, `/model`, `/cost`, `/compact`, `/plan`, `/resume`.
 Bundled skills (`/commit`, `/review`) are embedded via `go:embed` in
 `internal/skill/builtins/`. Any `.korai/skills/*.md` becomes a command;
 project/user skills override bundled ones by name. **To add a skill:** drop a

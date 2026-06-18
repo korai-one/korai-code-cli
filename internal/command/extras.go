@@ -1,5 +1,7 @@
 package command
 
+import "strings"
+
 // costCommand reports cumulative token usage and estimated cost.
 type costCommand struct{ report func() string }
 
@@ -37,6 +39,32 @@ func (*compactCommand) Description() string {
 // Run signals the host to compact the transcript.
 func (*compactCommand) Run(string) (Result, error) {
 	return Result{Action: CompactHistory}, nil
+}
+
+// resumeCommand lists saved sessions, or asks the host to load one by id.
+type resumeCommand struct{ list func() string }
+
+// NewResumeCommand returns a /resume command. With no argument it shows the
+// saved-session list from list; with an id it asks the host to load that session.
+func NewResumeCommand(list func() string) Command {
+	return &resumeCommand{list: list}
+}
+
+// Name returns "resume".
+func (*resumeCommand) Name() string { return "resume" }
+
+// Description returns the command summary.
+func (*resumeCommand) Description() string {
+	return "list saved sessions, or /resume <id> to load one"
+}
+
+// Run lists sessions when args is empty, otherwise signals a load.
+func (c *resumeCommand) Run(args string) (Result, error) {
+	id := strings.TrimSpace(args)
+	if id == "" {
+		return Result{Action: ShowText, Text: c.list()}, nil
+	}
+	return Result{Action: ResumeSession, Text: id}, nil
 }
 
 // planCommand toggles plan mode (read-only research) on or off.

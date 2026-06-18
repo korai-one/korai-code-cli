@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -58,6 +59,11 @@ type Model struct {
 	compactor    Compactor
 	modes        *perm.ModeSelector
 	planApprover *PlanApprover
+
+	saver        Saver
+	resumeLoader ResumeLoader
+	sessionID    string
+	sessionStart time.Time
 
 	busy        bool
 	pending     *permRequest
@@ -116,6 +122,36 @@ func (m Model) WithPlanApprover(a *PlanApprover) Model {
 	return m
 }
 
+// Saver persists the conversation under a session id and creation time. Called
+// after every completed turn so a session can be resumed later.
+type Saver func(id string, created time.Time, messages []apiclient.Message)
+
+// ResumeLoader loads a saved session by id, returning its messages and creation
+// time. Used by /resume <id>.
+type ResumeLoader func(id string) (messages []apiclient.Message, created time.Time, err error)
+
+// WithSaver wires conversation auto-saving. Call before tea.NewProgram.
+func (m Model) WithSaver(s Saver) Model {
+	m.saver = s
+	return m
+}
+
+// WithResumeLoader wires live /resume <id> loading. Call before tea.NewProgram.
+func (m Model) WithResumeLoader(l ResumeLoader) Model {
+	m.resumeLoader = l
+	return m
+}
+
+// WithSession seeds the active session id, its creation time, and any prior
+// history (e.g. from --resume or --continue). Call before tea.NewProgram.
+func (m Model) WithSession(id string, created time.Time, history []apiclient.Message) Model {
+	m.sessionID = id
+	m.sessionStart = created
+	m.history = history
+	m.entries = entriesFromMessages(history)
+	return m
+}
+
 // Init starts the input cursor blink and begins listening for permission and
 // plan-approval requests from the engine.
 func (m Model) Init() tea.Cmd {
@@ -161,8 +197,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.streaming = false
 		return m, nil
+	case resumeLoadedMsg:
+		if msg.err != nil {
+			m.addEntry(kindError, "resume failed: "+msg.err.Error())
+			return m, nil
+		}
+		m.sessionID = msg.id
+		m.sessionStart = msg.created
+		m.history = msg.messages
+		m.entries = entriesFromMessages(msg.messages)
+		m.addEntry(kindInfo, fmt.Sprintf("resumed session %s (%d messages)", msg.id, len(msg.messages)))
+		m.refreshViewport()
+		return m, nil
 	}
 	return m, nil
+}
+
+// entriesFromMessages rebuilds the visible transcript from a saved conversation,
+// showing the user and assistant text (tool internals are omitted).
+func entriesFromMessages(msgs []apiclient.Message) []entry {
+	var es []entry
+	for _, msg := range msgs {
+		for _, b := range msg.Content {
+			tb, ok := b.(apiclient.TextBlock)
+			if !ok || strings.TrimSpace(tb.Text) == "" {
+				continue
+			}
+			kind := kindAssistant
+			if msg.Role == apiclient.RoleUser {
+				kind = kindUser
+			}
+			es = append(es, entry{kind: kind, text: tb.Text})
+		}
+	}
+	return es
 }
 
 func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
@@ -313,8 +381,35 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 		return m.startTurn(res.Text)
 	case command.CompactHistory:
 		return m.startCompaction()
+	case command.ResumeSession:
+		return m.startResume(res.Text)
 	default:
 		return m, nil
+	}
+}
+
+// startResume loads a saved session by id via the injected loader.
+func (m Model) startResume(id string) (tea.Model, tea.Cmd) {
+	if m.resumeLoader == nil {
+		m.addEntry(kindInfo, "resume is unavailable")
+		return m, nil
+	}
+	loader := m.resumeLoader
+	return m, func() tea.Msg {
+		msgs, created, err := loader(id)
+		return resumeLoadedMsg{id: id, created: created, messages: msgs, err: err}
+	}
+}
+
+// saveCmd persists the current conversation, if a saver is wired.
+func (m Model) saveCmd() tea.Cmd {
+	if m.saver == nil || m.sessionID == "" {
+		return nil
+	}
+	saver, id, created, history := m.saver, m.sessionID, m.sessionStart, m.history
+	return func() tea.Msg {
+		saver(id, created, history)
+		return nil
 	}
 }
 
@@ -386,7 +481,7 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.streaming = false
 		m.refreshViewport()
-		return m, nil
+		return m, m.saveCmd()
 	case engine.ErrorEvent:
 		m.addEntry(kindError, ev.Err.Error())
 		m.busy = false

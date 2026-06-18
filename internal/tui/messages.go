@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
@@ -32,6 +34,14 @@ type compactDoneMsg struct {
 // planRequestMsg surfaces a pending plan-approval request to the model.
 type planRequestMsg struct {
 	pr planRequest
+}
+
+// resumeLoadedMsg carries the result of loading a saved session.
+type resumeLoadedMsg struct {
+	id       string
+	created  time.Time
+	messages []apiclient.Message
+	err      error
 }
 
 // waitForPlan blocks until the plan approver hands over a request.
