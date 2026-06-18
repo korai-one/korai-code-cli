@@ -17,6 +17,13 @@ type Settings struct {
 	PermissionMode string                   `json:"permissionMode,omitempty"`
 	Permissions    Permissions              `json:"permissions,omitempty"`
 	MCPServers     map[string]MCPServerSpec `json:"mcpServers,omitempty"`
+	Hooks          map[string][]HookSpec    `json:"hooks,omitempty"`
+}
+
+// HookSpec is one shell command to run for a lifecycle event. Plain data; the
+// command layer translates it into the hook package's type.
+type HookSpec struct {
+	Command string `json:"command"`
 }
 
 // Permissions holds the allow and deny rule lists applied to tool use.
@@ -78,7 +85,25 @@ func Merge(base, override Settings) Settings {
 	}
 	merged.MCPServers = servers
 
+	merged.Hooks = mergeHooks(base.Hooks, override.Hooks)
+
 	return merged
+}
+
+// mergeHooks unions the hook specs per event, base entries before override.
+// Returns nil when both inputs are empty so an absent config stays absent.
+func mergeHooks(base, override map[string][]HookSpec) map[string][]HookSpec {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string][]HookSpec, len(base)+len(override))
+	for k, v := range base {
+		out[k] = append(out[k], v...)
+	}
+	for k, v := range override {
+		out[k] = append(out[k], v...)
+	}
+	return out
 }
 
 // appendUnion returns base followed by override as a new slice. A nil result is

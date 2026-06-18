@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 )
@@ -40,9 +41,10 @@ type entry struct {
 
 // Model is the Bubble Tea model for the REPL.
 type Model struct {
-	runner Runner
-	asker  *Asker
-	system string
+	runner   Runner
+	asker    *Asker
+	system   string
+	commands *command.Registry
 
 	history   []apiclient.Message
 	entries   []entry
@@ -62,9 +64,9 @@ type Model struct {
 	quitting      bool
 }
 
-// New builds a REPL model bound to a Runner, the interactive Asker, and the
-// system prompt for the session.
-func New(runner Runner, asker *Asker, system string) Model {
+// New builds a REPL model bound to a Runner, the interactive Asker, the system
+// prompt, and the slash-command registry. A nil registry disables slash commands.
+func New(runner Runner, asker *Asker, system string, commands *command.Registry) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Ask Korai…"
 	ti.Prompt = "› "
@@ -74,12 +76,13 @@ func New(runner Runner, asker *Asker, system string) Model {
 	sp.Spinner = spinner.Dot
 
 	return Model{
-		runner:  runner,
-		asker:   asker,
-		system:  system,
-		input:   ti,
-		spinner: sp,
-		styles:  newStyles(),
+		runner:   runner,
+		asker:    asker,
+		system:   system,
+		commands: commands,
+		input:    ti,
+		spinner:  sp,
+		styles:   newStyles(),
 	}
 }
 
@@ -195,11 +198,55 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.input.Reset()
-	m.addEntry(kindUser, text)
 
+	// Slash commands are handled locally and never reach the model directly.
+	if name, args, ok := command.Parse(text); ok && m.commands != nil {
+		return m.dispatchCommand(name, args, text)
+	}
+
+	return m.startTurn(text)
+}
+
+// dispatchCommand runs a slash command and acts on its Result.
+func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
+	cmd, ok := m.commands.Get(name)
+	if !ok {
+		m.addEntry(kindError, "unknown command: /"+name)
+		return m, nil
+	}
+	res, err := cmd.Run(args)
+	if err != nil {
+		m.addEntry(kindError, err.Error())
+		return m, nil
+	}
+	switch res.Action {
+	case command.ShowText:
+		m.addEntry(kindInfo, res.Text)
+		return m, nil
+	case command.Clear:
+		m.entries = nil
+		m.history = nil
+		m.refreshViewport()
+		return m, nil
+	case command.Quit:
+		m.quitting = true
+		return m, tea.Quit
+	case command.SubmitPrompt:
+		m.addEntry(kindUser, raw)
+		return m.startTurn(res.Text)
+	default:
+		return m, nil
+	}
+}
+
+// startTurn records the prompt and launches an engine turn.
+func (m Model) startTurn(promptText string) (tea.Model, tea.Cmd) {
+	if !strings.HasPrefix(strings.TrimSpace(promptText), "/") {
+		m.addEntry(kindUser, promptText)
+	}
 	m.history = append(m.history, apiclient.Message{
 		Role:    apiclient.RoleUser,
-		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: text}},
+		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: promptText}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -12,23 +12,57 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
 
+// HookFunc is fired at lifecycle points. event is one of the Hook* constants;
+// toolName and input are set for tool events and empty otherwise. Returning
+// block=true vetoes a PreToolUse call, with reason surfaced to the model. It
+// uses only stdlib types so the engine never imports the hook implementation.
+type HookFunc func(ctx context.Context, event, toolName string, input json.RawMessage) (block bool, reason string)
+
+// Hook lifecycle event names passed to a HookFunc.
+const (
+	HookSessionStart = "SessionStart"
+	HookPreToolUse   = "PreToolUse"
+	HookPostToolUse  = "PostToolUse"
+)
+
 // Engine drives the LLM tool-calling loop for a single conversation turn.
 type Engine struct {
 	client   apiclient.Client
 	registry *tool.Registry
 	perm     *perm.Engine
 	deps     tool.Deps
+	hooks    HookFunc
+}
+
+// Option customizes an Engine.
+type Option func(*Engine)
+
+// WithHooks attaches a lifecycle hook function. A nil function disables hooks.
+func WithHooks(h HookFunc) Option {
+	return func(e *Engine) { e.hooks = h }
 }
 
 // New creates an Engine with the given inference client, tool registry,
 // permission engine, and tool dependencies.
-func New(client apiclient.Client, registry *tool.Registry, permEngine *perm.Engine, deps tool.Deps) *Engine {
-	return &Engine{
+func New(client apiclient.Client, registry *tool.Registry, permEngine *perm.Engine, deps tool.Deps, opts ...Option) *Engine {
+	e := &Engine{
 		client:   client,
 		registry: registry,
 		perm:     permEngine,
 		deps:     deps,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
+}
+
+// fireHook invokes the hook function if one is attached.
+func (e *Engine) fireHook(ctx context.Context, event, toolName string, input json.RawMessage) (bool, string) {
+	if e.hooks == nil {
+		return false, ""
+	}
+	return e.hooks(ctx, event, toolName, input)
 }
 
 // Run executes the agent loop starting from messages under system prompt system.
@@ -54,6 +88,8 @@ func (e *Engine) Run(ctx context.Context, messages []apiclient.Message, system s
 func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system string, ch chan<- Event) ([]apiclient.Message, error) {
 	history := make([]apiclient.Message, len(messages))
 	copy(history, messages)
+
+	e.fireHook(ctx, HookSessionStart, "", nil)
 
 	for {
 		req := e.buildRequest(ctx, history, system)
@@ -158,14 +194,12 @@ func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCom
 }
 
 // dispatchTool looks up the tool, resolves permission through the permission
-// engine, and executes it if allowed.
+// engine, and executes it if allowed. Every outcome (including denial and hook
+// blocks) is surfaced as a ToolResultEvent so the UI reflects what happened.
 func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallCompleteEvent, ch chan<- Event) tool.Result {
 	t, ok := e.registry.Get(call.Name)
 	if !ok {
-		return tool.Result{
-			Content: fmt.Sprintf("unknown tool %q", call.Name),
-			IsError: true,
-		}
+		return e.blocked(ch, call.Name, fmt.Sprintf("unknown tool %q", call.Name))
 	}
 
 	base := t.CheckPermission(ctx, call.Input, e.perm.Mode())
@@ -175,16 +209,18 @@ func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallComple
 		Base:     base,
 	})
 	if err != nil {
-		return tool.Result{
-			Content: fmt.Sprintf("permission resolution for %q failed: %v", call.Name, err),
-			IsError: true,
-		}
+		return e.blocked(ch, call.Name, fmt.Sprintf("permission resolution for %q failed: %v", call.Name, err))
 	}
 	if outcome == perm.OutcomeDenied {
-		return tool.Result{
-			Content: fmt.Sprintf("tool %q was not permitted in the current permission mode", call.Name),
-			IsError: true,
+		return e.blocked(ch, call.Name, fmt.Sprintf("tool %q was not permitted in the current permission mode", call.Name))
+	}
+
+	// PreToolUse hooks may veto the call before it runs.
+	if block, reason := e.fireHook(ctx, HookPreToolUse, call.Name, call.Input); block {
+		if reason == "" {
+			reason = "blocked by a PreToolUse hook"
 		}
+		return e.blocked(ch, call.Name, reason)
 	}
 
 	send(ch, ToolStartEvent{Name: call.Name, Input: call.Input})
@@ -194,7 +230,17 @@ func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallComple
 		result = tool.Result{Content: err.Error(), IsError: true}
 	}
 
+	e.fireHook(ctx, HookPostToolUse, call.Name, call.Input)
+
 	send(ch, ToolResultEvent{Name: call.Name, Result: result})
+	return result
+}
+
+// blocked emits an error ToolResultEvent and returns the matching result for a
+// call that never executed (unknown tool, denied, or hook-blocked).
+func (e *Engine) blocked(ch chan<- Event, name, reason string) tool.Result {
+	result := tool.Result{Content: reason, IsError: true}
+	send(ch, ToolResultEvent{Name: name, Result: result})
 	return result
 }
 

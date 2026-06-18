@@ -116,3 +116,61 @@ func TestEngineReadFileLoop(t *testing.T) {
 		t.Errorf("output mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestPreToolUseHookBlocks verifies that a PreToolUse hook returning block=true
+// prevents tool execution and surfaces the reason as an error result.
+func TestPreToolUseHookBlocks(t *testing.T) {
+	t.Parallel()
+
+	inputJSON, _ := json.Marshal(map[string]string{"path": "hello.txt"})
+	client := &mockClient{turns: [][]apiclient.Event{
+		{
+			apiclient.ToolCallCompleteEvent{ID: "c1", Name: "ReadFile", Input: inputJSON},
+			apiclient.MessageCompleteEvent{StopReason: "tool_use"},
+		},
+		{
+			apiclient.TextDeltaEvent{Text: "ok"},
+			apiclient.MessageCompleteEvent{StopReason: "end_turn"},
+		},
+	}}
+
+	registry := tool.NewRegistry()
+	registry.Register(readfile.New())
+	permEngine := perm.NewEngine(perm.ModeBypassPermissions, perm.Rules{}, perm.DenyAsker{})
+
+	var fired []string
+	hook := func(_ context.Context, event, _ string, _ json.RawMessage) (bool, string) {
+		fired = append(fired, event)
+		if event == engine.HookPreToolUse {
+			return true, "blocked by policy"
+		}
+		return false, ""
+	}
+
+	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: t.TempDir()}, engine.WithHooks(hook))
+
+	var toolResult engine.ToolResultEvent
+	var sawStart bool
+	for evt := range eng.Run(context.Background(), []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "read it"}}},
+	}, "") {
+		switch v := evt.(type) {
+		case engine.ToolStartEvent:
+			sawStart = true
+		case engine.ToolResultEvent:
+			toolResult = v
+		case engine.ErrorEvent:
+			t.Fatalf("engine error: %v", v.Err)
+		}
+	}
+
+	if sawStart {
+		t.Error("tool should not start when a PreToolUse hook blocks it")
+	}
+	if !toolResult.Result.IsError || toolResult.Result.Content != "blocked by policy" {
+		t.Errorf("result = %+v, want blocked error with reason", toolResult.Result)
+	}
+	if len(fired) == 0 || fired[0] != engine.HookSessionStart {
+		t.Errorf("expected SessionStart to fire first, got %v", fired)
+	}
+}

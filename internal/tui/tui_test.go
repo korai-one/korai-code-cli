@@ -21,7 +21,7 @@ func TestREPLEndToEnd(t *testing.T) {
 		engine.TextEvent{Text: "Hello from Korai"},
 		engine.DoneEvent{},
 	}}
-	m := New(runner, NewAsker(), "system")
+	m := New(runner, NewAsker(), "system", nil)
 
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
 

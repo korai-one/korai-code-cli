@@ -8,10 +8,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
+
+// testCommands returns a registry with the built-in commands for TUI tests.
+func testCommands() *command.Registry {
+	r := command.NewRegistry()
+	command.RegisterBuiltins(r, func() []string { return []string{"ReadFile"} })
+	return r
+}
 
 // fakeRunner emits a fixed sequence of engine events on a closed channel.
 type fakeRunner struct {
@@ -29,7 +37,7 @@ func (f fakeRunner) Run(_ context.Context, _ []apiclient.Message, _ string) <-ch
 
 // ready returns a model sized so the viewport is initialized.
 func ready(r Runner) Model {
-	m := New(r, NewAsker(), "system")
+	m := New(r, NewAsker(), "system", testCommands())
 	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return tm.(Model)
 }
@@ -145,6 +153,89 @@ func TestSubmitStartsTurn(t *testing.T) {
 	}
 	if len(m.history) != 1 {
 		t.Errorf("history should contain the submitted user message, got %d", len(m.history))
+	}
+}
+
+func TestSlashClearResetsTranscript(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	m.addEntry(kindUser, "old")
+	m.input.SetValue("/clear")
+
+	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+
+	if len(m.entries) != 0 {
+		t.Errorf("transcript should be cleared, got %d entries", len(m.entries))
+	}
+	if m.busy {
+		t.Error("a local command must not start a turn")
+	}
+}
+
+func TestSlashHelpShowsText(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	m.input.SetValue("/help")
+
+	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+
+	if m.busy {
+		t.Error("/help must not start a turn")
+	}
+	if e := lastEntry(m); e.kind != kindInfo || !strings.Contains(e.text, "/help") {
+		t.Errorf("expected help text entry, got %+v", e)
+	}
+}
+
+func TestSlashUnknownCommand(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	m.input.SetValue("/nope")
+
+	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+
+	if e := lastEntry(m); e.kind != kindError || !strings.Contains(e.text, "unknown command") {
+		t.Errorf("expected unknown-command error, got %+v", e)
+	}
+}
+
+// promptCmd is a fake skill-style command that expands to a prompt.
+type promptCmd struct{}
+
+func (promptCmd) Name() string        { return "explain" }
+func (promptCmd) Description() string { return "expand to a prompt" }
+func (promptCmd) Run(args string) (command.Result, error) {
+	return command.Result{Action: command.SubmitPrompt, Text: "explain this: " + args}, nil
+}
+
+func TestSlashPromptCommandStartsTurn(t *testing.T) {
+	t.Parallel()
+	reg := command.NewRegistry()
+	reg.Register(promptCmd{})
+
+	m := New(fakeRunner{events: []engine.Event{engine.DoneEvent{}}}, NewAsker(), "system", reg)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+	m.input.SetValue("/explain the loop")
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+
+	if !m.busy {
+		t.Error("a SubmitPrompt command should start a turn")
+	}
+	if cmd == nil {
+		t.Error("expected a command to read events")
+	}
+	if len(m.history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(m.history))
+	}
+	got := m.history[0].Content[0].(apiclient.TextBlock).Text
+	if got != "explain this: the loop" {
+		t.Errorf("submitted prompt = %q, want expanded skill text", got)
 	}
 }
 
