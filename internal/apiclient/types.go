@@ -91,8 +91,18 @@ type ToolCallCompleteEvent struct {
 	Input json.RawMessage
 }
 
+// Usage reports token counts for one model call. It is the engine/cost layer's
+// own type so backend usage shapes never leak past apiclient.
+type Usage struct {
+	InputTokens  int64
+	OutputTokens int64
+}
+
 // MessageCompleteEvent signals that the model has finished its response.
-type MessageCompleteEvent struct{ StopReason string }
+type MessageCompleteEvent struct {
+	StopReason string
+	Usage      Usage
+}
 
 // ErrorEvent wraps a terminal error from the stream.
 type ErrorEvent struct{ Err error }

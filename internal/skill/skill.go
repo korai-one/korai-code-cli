@@ -7,6 +7,7 @@
 package skill
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,30 @@ import (
 
 	"github.com/Nevaero/korai-code-cli/internal/command"
 )
+
+//go:embed builtins/*.md
+var builtinFS embed.FS
+
+// Builtins returns the skills bundled into the binary (e.g. commit, review).
+// Project and user skill files of the same name override these via Register.
+func Builtins() ([]Skill, error) {
+	entries, err := builtinFS.ReadDir("builtins")
+	if err != nil {
+		return nil, fmt.Errorf("reading bundled skills: %w", err)
+	}
+	skills := make([]Skill, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		data, err := builtinFS.ReadFile("builtins/" + e.Name())
+		if err != nil {
+			return nil, fmt.Errorf("reading bundled skill %s: %w", e.Name(), err)
+		}
+		skills = append(skills, parse(e.Name(), string(data)))
+	}
+	return skills, nil
+}
 
 // Skill is a reusable prompt loaded from a markdown file.
 type Skill struct {

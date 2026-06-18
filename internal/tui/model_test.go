@@ -353,3 +353,83 @@ func TestAskerCancelled(t *testing.T) {
 		t.Errorf("decision = %v, want deny on cancellation (fail-closed)", d)
 	}
 }
+
+func TestSlashCompactRunsCompactor(t *testing.T) {
+	t.Parallel()
+	reg := command.NewRegistry()
+	reg.Register(command.NewCompactCommand())
+
+	called := false
+	compactor := func(_ context.Context, h []apiclient.Message) ([]apiclient.Message, error) {
+		called = true
+		return h[len(h)-1:], nil // keep only the last message
+	}
+
+	m := New(fakeRunner{}, NewAsker(), "system", reg).WithCompactor(compactor)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+	m.history = []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "a"}}},
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "b"}}},
+	}
+	m.input.SetValue("/compact")
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+	if !m.busy {
+		t.Error("compaction should mark the model busy")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to run the compactor")
+	}
+
+	// Run the batch and feed the compactDoneMsg back (ignoring the spinner tick).
+	var done tea.Msg
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if mm := c(); mm != nil {
+				if _, isCompact := mm.(compactDoneMsg); isCompact {
+					done = mm
+				}
+			}
+		}
+	}
+	if done == nil {
+		t.Fatal("no compactDoneMsg produced")
+	}
+	tm, _ = m.Update(done)
+	m = tm.(Model)
+
+	if !called {
+		t.Error("compactor was not invoked")
+	}
+	if len(m.history) != 1 {
+		t.Errorf("history len = %d, want 1 after compaction", len(m.history))
+	}
+	if m.busy {
+		t.Error("busy should clear after compaction completes")
+	}
+}
+
+func TestCompactUnavailable(t *testing.T) {
+	t.Parallel()
+	reg := command.NewRegistry()
+	reg.Register(command.NewCompactCommand())
+
+	m := New(fakeRunner{}, NewAsker(), "system", reg) // no compactor
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+	m.history = []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "a"}}},
+	}
+	m.input.SetValue("/compact")
+
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+	if m.busy {
+		t.Error("compaction must not start without a compactor")
+	}
+	if e := lastEntry(m); e.kind != kindInfo || !strings.Contains(e.text, "unavailable") {
+		t.Errorf("expected unavailable info, got %+v", e)
+	}
+}

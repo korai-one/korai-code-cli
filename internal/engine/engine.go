@@ -33,7 +33,13 @@ type Engine struct {
 	deps     tool.Deps
 	hooks    HookFunc
 	models   *apiclient.ModelSelector
+	usage    UsageRecorder
 }
+
+// UsageRecorder receives the token usage of each model call along with the model
+// that produced it. It is the seam the cost tracker plugs into; usage flows as
+// the apiclient type, never a backend-specific one.
+type UsageRecorder func(model string, usage apiclient.Usage)
 
 // Option customizes an Engine.
 type Option func(*Engine)
@@ -47,6 +53,12 @@ func WithHooks(h HookFunc) Option {
 // onto each request, so the model can change between turns (e.g. via /model).
 func WithModelSelector(s *apiclient.ModelSelector) Option {
 	return func(e *Engine) { e.models = s }
+}
+
+// WithUsageRecorder attaches a recorder invoked with the token usage of every
+// model call. A nil recorder disables usage reporting.
+func WithUsageRecorder(r UsageRecorder) Option {
+	return func(e *Engine) { e.usage = r }
 }
 
 // New creates an Engine with the given inference client, tool registry,
@@ -104,6 +116,9 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 		if err != nil {
 			return history, err
 		}
+		if e.usage != nil {
+			e.usage(req.Model, turn.usage)
+		}
 		if len(turn.toolCalls) == 0 {
 			if turn.stopReason == "max_tokens" {
 				slog.Warn("response truncated: hit max output tokens")
@@ -146,6 +161,7 @@ type turnResult struct {
 	toolCalls  []apiclient.ToolCallCompleteEvent
 	text       string
 	stopReason string
+	usage      apiclient.Usage
 }
 
 // streamTurn calls the model and streams events until the turn ends. It returns
@@ -173,6 +189,7 @@ func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<
 			res.toolCalls = append(res.toolCalls, v)
 		case apiclient.MessageCompleteEvent:
 			res.stopReason = v.StopReason
+			res.usage = v.Usage
 		case apiclient.ErrorEvent:
 			return turnResult{}, v.Err
 		}

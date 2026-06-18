@@ -136,7 +136,13 @@ func (c *AnthropicClient) drainStream(ctx context.Context, stream *ssestream.Str
 
 		case "message_delta":
 			md := evt.AsMessageDelta() // TODO KORAI SDK
-			send(ch, MessageCompleteEvent{StopReason: string(md.Delta.StopReason)})
+			send(ch, MessageCompleteEvent{
+				StopReason: string(md.Delta.StopReason),
+				Usage: Usage{ // TODO KORAI SDK
+					InputTokens:  md.Usage.InputTokens,
+					OutputTokens: md.Usage.OutputTokens,
+				},
+			})
 		}
 	}
 

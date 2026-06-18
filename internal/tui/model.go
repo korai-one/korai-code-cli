@@ -55,6 +55,8 @@ type Model struct {
 	viewport viewport.Model
 	styles   styles
 
+	compactor Compactor
+
 	busy    bool
 	pending *permRequest
 	cancel  context.CancelFunc
@@ -86,6 +88,16 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 	}
 }
 
+// Compactor summarizes the conversation history, returning a shorter history.
+type Compactor func(ctx context.Context, history []apiclient.Message) ([]apiclient.Message, error)
+
+// WithCompactor returns a copy of the model wired to run /compact via c. Call
+// before handing the model to tea.NewProgram.
+func (m Model) WithCompactor(c Compactor) Model {
+	m.compactor = c
+	return m
+}
+
 // Init starts the input cursor blink and begins listening for permission
 // requests from the engine.
 func (m Model) Init() tea.Cmd {
@@ -111,6 +123,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case engineEventMsg:
 		return m.onEngineEvent(msg)
+	case compactDoneMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.addEntry(kindError, "compaction failed: "+msg.err.Error())
+		} else {
+			m.history = msg.history
+			m.addEntry(kindInfo, fmt.Sprintf("compacted; %d messages retained", len(msg.history)))
+		}
+		return m, nil
 	case turnDoneMsg:
 		m.busy = false
 		m.streaming = false
@@ -234,9 +255,34 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 	case command.SubmitPrompt:
 		m.addEntry(kindUser, raw)
 		return m.startTurn(res.Text)
+	case command.CompactHistory:
+		return m.startCompaction()
 	default:
 		return m, nil
 	}
+}
+
+// startCompaction runs the injected compactor over the current history.
+func (m Model) startCompaction() (tea.Model, tea.Cmd) {
+	if m.compactor == nil {
+		m.addEntry(kindInfo, "compaction is unavailable")
+		return m, nil
+	}
+	if len(m.history) == 0 {
+		m.addEntry(kindInfo, "nothing to compact")
+		return m, nil
+	}
+	m.addEntry(kindInfo, "compacting conversation…")
+	m.busy = true
+	history := m.history
+	compactor := m.compactor
+	return m, tea.Batch(
+		func() tea.Msg {
+			compacted, err := compactor(context.Background(), history)
+			return compactDoneMsg{history: compacted, err: err}
+		},
+		m.spinner.Tick,
+	)
 }
 
 // startTurn records the prompt and launches an engine turn.

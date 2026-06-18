@@ -127,7 +127,7 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	}
 	permEngine := perm.NewEngine(sess.mode, sess.rules, asker)
 
-	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models))
+	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models), engine.WithUsageRecorder(sess.cost.Add))
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
 	}
@@ -163,9 +163,9 @@ func runTUI(ctx context.Context, opts runOptions) error {
 
 	asker := tui.NewAsker()
 	permEngine := perm.NewEngine(sess.mode, sess.rules, asker)
-	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models))
+	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models), engine.WithUsageRecorder(sess.cost.Add))
 
-	model := tui.New(eng, asker, sess.system, sess.commands)
+	model := tui.New(eng, asker, sess.system, sess.commands).WithCompactor(sess.compactor)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)

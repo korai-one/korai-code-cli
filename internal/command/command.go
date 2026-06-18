@@ -21,6 +21,8 @@ const (
 	Quit
 	// SubmitPrompt sends Result.Text to the model as a user message.
 	SubmitPrompt
+	// CompactHistory asks the host to summarize and shrink the conversation.
+	CompactHistory
 )
 
 // Result is what a command returns to the host.

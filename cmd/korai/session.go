@@ -10,8 +10,10 @@ import (
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/Nevaero/korai-code-cli/internal/compact"
 	"github.com/Nevaero/korai-code-cli/internal/config"
 	appctx "github.com/Nevaero/korai-code-cli/internal/context"
+	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/hook"
 	"github.com/Nevaero/korai-code-cli/internal/mcp"
@@ -29,16 +31,18 @@ import (
 // resolved permission policy, slash commands, lifecycle hooks, and any
 // resources to release on shutdown.
 type assembled struct {
-	client   apiclient.Client
-	registry *tool.Registry
-	commands *command.Registry
-	models   *apiclient.ModelSelector
-	hooks    engine.HookFunc
-	rules    perm.Rules
-	mode     perm.Mode
-	system   string
-	deps     tool.Deps
-	closers  []func() error
+	client    apiclient.Client
+	registry  *tool.Registry
+	commands  *command.Registry
+	models    *apiclient.ModelSelector
+	cost      *cost.Tracker
+	compactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
+	hooks     engine.HookFunc
+	rules     perm.Rules
+	mode      perm.Mode
+	system    string
+	deps      tool.Deps
+	closers   []func() error
 }
 
 // availableModels is the set the /model command switches between. The active
@@ -92,6 +96,7 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 	deps := tool.Deps{WorkDir: wd}
 	client := apiclient.NewAnthropicClient(apiKey, model)
 	models := apiclient.NewModelSelector(model)
+	costTracker := cost.NewTracker()
 	rules := perm.Rules{Allow: settings.Permissions.Allow, Deny: settings.Permissions.Deny}
 
 	system := prompt.Compose(appctx.Build(ctx, wd))
@@ -119,23 +124,30 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 	}
 	registry.Register(agenttool.New(spawner))
 
+	compactor := func(cctx context.Context, history []apiclient.Message) ([]apiclient.Message, error) {
+		return compact.Compact(cctx, client, history, compact.DefaultKeepRecent)
+	}
+
 	return &assembled{
-		client:   client,
-		registry: registry,
-		commands: buildCommands(home, wd, registry, models),
-		models:   models,
-		hooks:    buildHooks(settings.Hooks),
-		rules:    rules,
-		mode:     mode,
-		system:   system,
-		deps:     deps,
-		closers:  closers,
+		client:    client,
+		registry:  registry,
+		commands:  buildCommands(home, wd, registry, models, costTracker),
+		models:    models,
+		cost:      costTracker,
+		compactor: compactor,
+		hooks:     buildHooks(settings.Hooks),
+		rules:     rules,
+		mode:      mode,
+		system:    system,
+		deps:      deps,
+		closers:   closers,
 	}, nil
 }
 
-// buildCommands assembles the slash-command registry: built-ins, the /model
-// switcher, plus skills discovered from the project and user skill directories.
-func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector) *command.Registry {
+// buildCommands assembles the slash-command registry: built-ins, /model, /cost,
+// /compact, the bundled skills, and skills discovered from the project and user
+// skill directories (which override bundled ones of the same name).
+func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector, costTracker *cost.Tracker) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -146,6 +158,15 @@ func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.M
 		return names
 	})
 	reg.Register(command.NewModelCommand(availableModels, models))
+	reg.Register(command.NewCostCommand(costTracker.Summary))
+	reg.Register(command.NewCompactCommand())
+
+	// Bundled skills first, then discovered skills (which override by name).
+	if builtins, err := skill.Builtins(); err != nil {
+		slog.Warn("loading bundled skills", "error", err)
+	} else {
+		skill.Register(reg, builtins)
+	}
 
 	dirs := []string{filepath.Join(wd, ".korai", "skills")}
 	if home != "" {

@@ -167,3 +167,26 @@ func TestRegisterAndRun(t *testing.T) {
 		}
 	})
 }
+
+func TestBuiltins(t *testing.T) {
+	t.Parallel()
+	skills, err := skill.Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	if len(skills) < 2 {
+		t.Fatalf("expected at least 2 bundled skills, got %d", len(skills))
+	}
+	names := map[string]bool{}
+	for _, s := range skills {
+		names[s.Name] = true
+		if s.Description == "" || s.Body == "" {
+			t.Errorf("bundled skill %q missing description or body", s.Name)
+		}
+	}
+	for _, want := range []string{"commit", "review"} {
+		if !names[want] {
+			t.Errorf("missing bundled skill %q", want)
+		}
+	}
+}

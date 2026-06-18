@@ -3,6 +3,7 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 )
@@ -20,6 +21,12 @@ type turnDoneMsg struct{}
 // permRequestMsg surfaces a pending permission request to the model.
 type permRequestMsg struct {
 	pr permRequest
+}
+
+// compactDoneMsg carries the result of a /compact run.
+type compactDoneMsg struct {
+	history []apiclient.Message
+	err     error
 }
 
 // waitForEvent reads the next engine event. When the channel is closed it
