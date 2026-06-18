@@ -35,11 +35,11 @@ type assembled struct {
 	registry  *tool.Registry
 	commands  *command.Registry
 	models    *apiclient.ModelSelector
+	modes     *perm.ModeSelector
 	cost      *cost.Tracker
 	compactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
 	hooks     engine.HookFunc
 	rules     perm.Rules
-	mode      perm.Mode
 	system    string
 	deps      tool.Deps
 	closers   []func() error
@@ -96,6 +96,7 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 	deps := tool.Deps{WorkDir: wd}
 	client := apiclient.NewAnthropicClient(apiKey, model)
 	models := apiclient.NewModelSelector(model)
+	modes := perm.NewModeSelector(mode)
 	costTracker := cost.NewTracker()
 	rules := perm.Rules{Allow: settings.Permissions.Allow, Deny: settings.Permissions.Deny}
 
@@ -131,13 +132,13 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 	return &assembled{
 		client:    client,
 		registry:  registry,
-		commands:  buildCommands(home, wd, registry, models, costTracker),
+		commands:  buildCommands(home, wd, registry, models, modes, costTracker),
 		models:    models,
+		modes:     modes,
 		cost:      costTracker,
 		compactor: compactor,
 		hooks:     buildHooks(settings.Hooks),
 		rules:     rules,
-		mode:      mode,
 		system:    system,
 		deps:      deps,
 		closers:   closers,
@@ -147,7 +148,7 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector, costTracker *cost.Tracker) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -160,6 +161,7 @@ func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.M
 	reg.Register(command.NewModelCommand(availableModels, models))
 	reg.Register(command.NewCostCommand(costTracker.Summary))
 	reg.Register(command.NewCompactCommand())
+	reg.Register(command.NewPlanCommand(func() string { return togglePlan(modes) }))
 
 	// Bundled skills first, then discovered skills (which override by name).
 	if builtins, err := skill.Builtins(); err != nil {
@@ -228,9 +230,20 @@ type subAgentSpawner struct {
 	system   string
 }
 
+// togglePlan flips the selector between plan mode and default mode and returns
+// the resulting mode name. Wired into the /plan command.
+func togglePlan(modes *perm.ModeSelector) string {
+	if modes.Get() == perm.ModePlan {
+		modes.Set(perm.ModeDefault)
+	} else {
+		modes.Set(perm.ModePlan)
+	}
+	return modes.Get().String()
+}
+
 // Spawn runs the sub-agent loop for prompt and returns the concatenated text.
 func (s *subAgentSpawner) Spawn(ctx context.Context, prompt string) (string, error) {
-	permEngine := perm.NewEngine(s.mode, s.rules, perm.DenyAsker{})
+	permEngine := perm.NewEngine(perm.NewModeSelector(s.mode), s.rules, perm.DenyAsker{})
 	eng := engine.New(s.client, s.registry, permEngine, s.deps)
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: prompt}}},

@@ -56,6 +56,7 @@ type Model struct {
 	styles   styles
 
 	compactor Compactor
+	modes     *perm.ModeSelector
 
 	busy    bool
 	pending *permRequest
@@ -95,6 +96,14 @@ type Compactor func(ctx context.Context, history []apiclient.Message) ([]apiclie
 // before handing the model to tea.NewProgram.
 func (m Model) WithCompactor(c Compactor) Model {
 	m.compactor = c
+	return m
+}
+
+// WithModes returns a copy of the model wired to the shared permission-mode
+// selector, enabling shift+tab cycling and the mode indicator. Call before
+// handing the model to tea.NewProgram.
+func (m Model) WithModes(s *perm.ModeSelector) Model {
+	m.modes = s
 	return m
 }
 
@@ -173,6 +182,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Permission dialog takes priority over all other input.
 	if m.pending != nil {
 		return m.onDialogKey(msg)
+	}
+
+	// Shift+Tab cycles the permission mode (default → acceptEdits → plan).
+	if msg.Type == tea.KeyShiftTab && m.modes != nil {
+		m.addEntry(kindInfo, "permission mode: "+m.modes.Cycle().String())
+		return m, nil
 	}
 
 	if m.busy {
@@ -398,7 +413,30 @@ func (m Model) View() string {
 		bottom = m.input.View()
 	}
 
-	return strings.Join([]string{m.viewport.View(), bottom}, "\n")
+	lines := []string{m.viewport.View()}
+	if badge := m.modeBadge(); badge != "" {
+		lines = append(lines, badge)
+	}
+	lines = append(lines, bottom)
+	return strings.Join(lines, "\n")
+}
+
+// modeBadge renders the current permission-mode indicator shown above the input.
+// The default mode ("no mode") shows nothing.
+func (m Model) modeBadge() string {
+	if m.modes == nil {
+		return ""
+	}
+	switch m.modes.Get() {
+	case perm.ModePlan:
+		return m.styles.info.Render("⏸ plan mode — read-only · shift+tab to cycle")
+	case perm.ModeAcceptEdits:
+		return m.styles.info.Render("✎ accept edits — files auto-approved · shift+tab to cycle")
+	case perm.ModeBypassPermissions:
+		return m.styles.errorText.Render("⚠ bypass permissions — all tools auto-approved")
+	default:
+		return ""
+	}
 }
 
 func (m Model) renderDialog() string {

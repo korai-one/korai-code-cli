@@ -38,3 +38,25 @@ func (*compactCommand) Description() string {
 func (*compactCommand) Run(string) (Result, error) {
 	return Result{Action: CompactHistory}, nil
 }
+
+// planCommand toggles plan mode (read-only research) on or off.
+type planCommand struct{ toggle func() string }
+
+// NewPlanCommand returns a /plan command. toggle switches plan mode on/off and
+// returns the resulting mode name, which the command reports to the user.
+func NewPlanCommand(toggle func() string) Command {
+	return &planCommand{toggle: toggle}
+}
+
+// Name returns "plan".
+func (*planCommand) Name() string { return "plan" }
+
+// Description returns the command summary.
+func (*planCommand) Description() string {
+	return "toggle plan mode (read-only; agent proposes before acting)"
+}
+
+// Run toggles plan mode and reports the new mode.
+func (c *planCommand) Run(string) (Result, error) {
+	return Result{Action: ShowText, Text: "permission mode: " + c.toggle()}, nil
+}

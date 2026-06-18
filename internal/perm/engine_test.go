@@ -92,7 +92,7 @@ func TestResolve(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := perm.NewEngine(tt.mode, tt.rules, tt.asker)
+			e := perm.NewEngine(perm.NewModeSelector(tt.mode), tt.rules, tt.asker)
 			got, err := e.Resolve(context.Background(), tt.req)
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
@@ -111,7 +111,7 @@ func TestResolveAskerError(t *testing.T) {
 	asker := perm.AskFunc(func(context.Context, perm.Request) (perm.Decision, error) {
 		return perm.DecisionAllow, sentinel
 	})
-	e := perm.NewEngine(perm.ModeDefault, perm.Rules{}, asker)
+	e := perm.NewEngine(perm.NewModeSelector(perm.ModeDefault), perm.Rules{}, asker)
 
 	got, err := e.Resolve(context.Background(), perm.Request{ToolName: "Bash", Base: perm.DecisionAsk})
 	if !errors.Is(err, sentinel) {
@@ -125,7 +125,7 @@ func TestResolveAskerError(t *testing.T) {
 func TestNewEngineNilAskerFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	e := perm.NewEngine(perm.ModeDefault, perm.Rules{}, nil)
+	e := perm.NewEngine(perm.NewModeSelector(perm.ModeDefault), perm.Rules{}, nil)
 	got, err := e.Resolve(context.Background(), perm.Request{ToolName: "Bash", Base: perm.DecisionAsk})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -137,7 +137,7 @@ func TestNewEngineNilAskerFailsClosed(t *testing.T) {
 
 func TestMode(t *testing.T) {
 	t.Parallel()
-	e := perm.NewEngine(perm.ModeAcceptEdits, perm.Rules{}, nil)
+	e := perm.NewEngine(perm.NewModeSelector(perm.ModeAcceptEdits), perm.Rules{}, nil)
 	if e.Mode() != perm.ModeAcceptEdits {
 		t.Errorf("Mode() = %v, want acceptEdits", e.Mode())
 	}

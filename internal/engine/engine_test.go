@@ -75,7 +75,7 @@ func TestEngineReadFileLoop(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(readfile.New())
 
-	permEngine := perm.NewEngine(perm.ModeBypassPermissions, perm.Rules{}, perm.DenyAsker{})
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
 	eng := engine.New(client, registry, permEngine, tool.Deps{WorkDir: fixtureDir})
 	messages := []apiclient.Message{
 		{
@@ -136,7 +136,7 @@ func TestPreToolUseHookBlocks(t *testing.T) {
 
 	registry := tool.NewRegistry()
 	registry.Register(readfile.New())
-	permEngine := perm.NewEngine(perm.ModeBypassPermissions, perm.Rules{}, perm.DenyAsker{})
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
 
 	var fired []string
 	hook := func(_ context.Context, event, _ string, _ json.RawMessage) (bool, string) {

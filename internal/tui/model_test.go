@@ -433,3 +433,42 @@ func TestCompactUnavailable(t *testing.T) {
 		t.Errorf("expected unavailable info, got %+v", e)
 	}
 }
+
+func TestShiftTabCyclesMode(t *testing.T) {
+	t.Parallel()
+	modes := perm.NewModeSelector(perm.ModeDefault)
+	m := New(fakeRunner{}, NewAsker(), "system", testCommands()).WithModes(modes)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = tm.(Model)
+	if modes.Get() != perm.ModeAcceptEdits {
+		t.Errorf("after one shift+tab = %v, want acceptEdits", modes.Get())
+	}
+	if e := lastEntry(m); e.kind != kindInfo || !strings.Contains(e.text, "acceptEdits") {
+		t.Errorf("expected mode-change info, got %+v", e)
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if modes.Get() != perm.ModePlan {
+		t.Errorf("after two shift+tab = %v, want plan", modes.Get())
+	}
+}
+
+func TestModeBadge(t *testing.T) {
+	t.Parallel()
+	modes := perm.NewModeSelector(perm.ModePlan)
+	m := New(fakeRunner{}, NewAsker(), "system", testCommands()).WithModes(modes)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	if !strings.Contains(m.View(), "plan mode") {
+		t.Errorf("plan badge not shown in view:\n%s", m.View())
+	}
+
+	modes.Set(perm.ModeDefault)
+	if strings.Contains(m.View(), "plan mode") {
+		t.Error("default mode should show no plan badge")
+	}
+}

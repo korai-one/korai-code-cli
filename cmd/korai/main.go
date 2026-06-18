@@ -156,14 +156,14 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	if opts.autoYes {
 		asker = perm.AllowAsker{}
 	}
-	permEngine := perm.NewEngine(sess.mode, sess.rules, asker)
+	permEngine := perm.NewEngine(sess.modes, sess.rules, asker)
 
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models), engine.WithUsageRecorder(sess.cost.Add))
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
 	}
 
-	slog.Debug("starting headless turn", "permission_mode", sess.mode.String())
+	slog.Debug("starting headless turn", "permission_mode", sess.modes.Get().String())
 
 	for evt := range eng.Run(ctx, messages, sess.system) {
 		switch v := evt.(type) {
@@ -193,10 +193,10 @@ func runTUI(ctx context.Context, opts runOptions) error {
 	defer sess.close()
 
 	asker := tui.NewAsker()
-	permEngine := perm.NewEngine(sess.mode, sess.rules, asker)
+	permEngine := perm.NewEngine(sess.modes, sess.rules, asker)
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models), engine.WithUsageRecorder(sess.cost.Add))
 
-	model := tui.New(eng, asker, sess.system, sess.commands).WithCompactor(sess.compactor)
+	model := tui.New(eng, asker, sess.system, sess.commands).WithCompactor(sess.compactor).WithModes(sess.modes)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)

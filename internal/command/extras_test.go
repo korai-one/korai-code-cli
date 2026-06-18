@@ -36,3 +36,29 @@ func TestCompactCommand(t *testing.T) {
 		t.Errorf("name = %q, want compact", cmd.Name())
 	}
 }
+
+func TestPlanCommand(t *testing.T) {
+	t.Parallel()
+	state := "default"
+	toggle := func() string {
+		if state == "plan" {
+			state = "default"
+		} else {
+			state = "plan"
+		}
+		return state
+	}
+	cmd := command.NewPlanCommand(toggle)
+	if cmd.Name() != "plan" {
+		t.Errorf("name = %q, want plan", cmd.Name())
+	}
+
+	res, _ := cmd.Run("")
+	if res.Action != command.ShowText || !strings.Contains(res.Text, "plan") {
+		t.Errorf("first toggle = %+v, want plan", res)
+	}
+	res, _ = cmd.Run("")
+	if !strings.Contains(res.Text, "default") {
+		t.Errorf("second toggle = %+v, want default", res)
+	}
+}

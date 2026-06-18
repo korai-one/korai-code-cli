@@ -13,26 +13,30 @@ const (
 )
 
 // Engine resolves permission requests against the active mode, explicit rules,
-// and an Asker. It holds no global state and is safe to share read-only across
+// and an Asker. The mode lives in a ModeSelector so it can change at runtime
+// (e.g. /plan or shift+tab) and be shared with the UI. Safe to share across
 // goroutines (the Asker must be concurrency-safe if used concurrently).
 type Engine struct {
-	mode  Mode
+	modes *ModeSelector
 	rules Rules
 	asker Asker
 }
 
 // NewEngine builds a permission engine. A nil asker defaults to DenyAsker so
-// resolution is fail-closed.
-func NewEngine(mode Mode, rules Rules, asker Asker) *Engine {
+// resolution is fail-closed; a nil selector defaults to ModeDefault.
+func NewEngine(modes *ModeSelector, rules Rules, asker Asker) *Engine {
 	if asker == nil {
 		asker = DenyAsker{}
 	}
-	return &Engine{mode: mode, rules: rules, asker: asker}
+	if modes == nil {
+		modes = NewModeSelector(ModeDefault)
+	}
+	return &Engine{modes: modes, rules: rules, asker: asker}
 }
 
 // Mode returns the active permission mode. The caller passes this to a tool's
 // CheckPermission to obtain the base decision for a Request.
-func (e *Engine) Mode() Mode { return e.mode }
+func (e *Engine) Mode() Mode { return e.modes.Get() }
 
 // Resolve decides whether a tool call may proceed. Resolution order (fail-closed):
 //
@@ -41,7 +45,7 @@ func (e *Engine) Mode() Mode { return e.mode }
 //  3. The tool's base decision: Deny -> denied, Allow -> allowed.
 //  4. Base Ask: a matching allow rule allows; otherwise the Asker decides.
 func (e *Engine) Resolve(ctx context.Context, req Request) (Outcome, error) {
-	if e.mode == ModeBypassPermissions {
+	if e.modes.Get() == ModeBypassPermissions {
 		return OutcomeAllowed, nil
 	}
 	if e.rules.DeniesTool(req.ToolName) {
