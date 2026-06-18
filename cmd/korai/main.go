@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,6 +28,24 @@ func main() {
 	}
 }
 
+// resolvePrompt returns the headless prompt: the positional argument if given,
+// otherwise stdin when it is piped or redirected (not an interactive terminal).
+func resolvePrompt(args []string) (string, error) {
+	if len(args) > 0 {
+		return strings.TrimSpace(args[0]), nil
+	}
+	fi, err := os.Stdin.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
+		// No data piped in (stdin is a terminal); nothing to read.
+		return "", nil
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("reading stdin: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // runOptions holds the resolved CLI flags for a run. The *Set fields record
 // whether the user passed the flag explicitly, so config-file values can fill
 // in the rest.
@@ -41,7 +60,7 @@ type runOptions struct {
 
 func rootCmd() *cobra.Command {
 	var (
-		printPrompt string
+		printMode   bool
 		model       string
 		debug       bool
 		permModeStr string
@@ -49,24 +68,35 @@ func rootCmd() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:           "korai",
-		Short:         "Korai Code CLI — an AI coding agent on the Korai P2P inference network",
+		Use:   "korai [prompt]",
+		Short: "Korai Code CLI — an AI coding agent on the Korai P2P inference network",
+		Long: "Korai Code CLI — an AI coding agent on the Korai P2P inference network.\n\n" +
+			"Starts an interactive session by default. Use -p/--print for non-interactive\n" +
+			"output, with the prompt as an argument or piped on stdin.",
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := perm.ParseMode(permModeStr)
 			if err != nil {
 				return err
 			}
 			opts := runOptions{
-				prompt:      printPrompt,
 				model:       model,
 				modelSet:    cmd.Flags().Changed("model"),
 				permMode:    mode,
 				permModeSet: cmd.Flags().Changed("permission-mode"),
 				autoYes:     autoYes,
 			}
-			if printPrompt != "" {
+			if printMode {
+				prompt, perr := resolvePrompt(args)
+				if perr != nil {
+					return perr
+				}
+				if prompt == "" {
+					return fmt.Errorf("no prompt: pass one as an argument or pipe it on stdin with -p")
+				}
+				opts.prompt = prompt
 				setupLogging(debug, os.Stderr)
 				return runPrint(cmd.Context(), opts)
 			}
@@ -85,7 +115,8 @@ func rootCmd() *cobra.Command {
 		},
 	}
 
-	root.Flags().StringVar(&printPrompt, "print", "", "run a single prompt in headless mode and exit")
+	root.Flags().BoolVarP(&printMode, "print", "p", false,
+		"run a single prompt (from the argument or stdin) and exit")
 	root.Flags().StringVar(&model, "model", "claude-sonnet-4-6", "model identifier")
 	root.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
 	root.Flags().StringVar(&permModeStr, "permission-mode", "default",
