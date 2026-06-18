@@ -124,9 +124,18 @@ Strict Elm: `Update` is pure/fast, all I/O in `tea.Cmd`s, `View` only renders.
 Channels (engine events, permission requests, compaction) are bridged into
 messages via Cmds. Slash commands are intercepted in `submit()`.
 
+### Permission modes & plan mode
+
+`perm.ModeSelector` holds the active mode, shared by the perm engine, `/plan`,
+and the TUI (shift+tab cycles default → acceptEdits → plan; a badge shows the
+current mode). Plan mode enforces read-only at the tool layer; a dynamic system
+suffix (`engine.WithSystemSuffix`) tells the agent to investigate then call the
+`ExitPlanMode` tool, which presents a plan for approval (interactive in the TUI,
+`--yes` headless) and on approval switches to acceptEdits so the work proceeds.
+
 ### Slash commands & skills
 
-Built-ins: `/help`, `/clear`, `/quit`, `/tools`, `/model`, `/cost`, `/compact`.
+Built-ins: `/help`, `/clear`, `/quit`, `/tools`, `/model`, `/cost`, `/compact`, `/plan`.
 Bundled skills (`/commit`, `/review`) are embedded via `go:embed` in
 `internal/skill/builtins/`. Any `.korai/skills/*.md` becomes a command;
 project/user skills override bundled ones by name. **To add a skill:** drop a

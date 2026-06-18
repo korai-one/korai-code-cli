@@ -27,13 +27,14 @@ const (
 
 // Engine drives the LLM tool-calling loop for a single conversation turn.
 type Engine struct {
-	client   apiclient.Client
-	registry *tool.Registry
-	perm     *perm.Engine
-	deps     tool.Deps
-	hooks    HookFunc
-	models   *apiclient.ModelSelector
-	usage    UsageRecorder
+	client    apiclient.Client
+	registry  *tool.Registry
+	perm      *perm.Engine
+	deps      tool.Deps
+	hooks     HookFunc
+	models    *apiclient.ModelSelector
+	usage     UsageRecorder
+	sysSuffix func() string
 }
 
 // UsageRecorder receives the token usage of each model call along with the model
@@ -59,6 +60,14 @@ func WithModelSelector(s *apiclient.ModelSelector) Option {
 // model call. A nil recorder disables usage reporting.
 func WithUsageRecorder(r UsageRecorder) Option {
 	return func(e *Engine) { e.usage = r }
+}
+
+// WithSystemSuffix attaches a function whose return value is appended to the
+// system prompt on every request. It is evaluated per turn, so it can reflect
+// runtime state (e.g. plan-mode instructions while in plan mode). An empty
+// return adds nothing.
+func WithSystemSuffix(fn func() string) Option {
+	return func(e *Engine) { e.sysSuffix = fn }
 }
 
 // New creates an Engine with the given inference client, tool registry,
@@ -281,6 +290,11 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 			Description: t.Description(ctx),
 			InputSchema: raw,
 		})
+	}
+	if e.sysSuffix != nil {
+		if suffix := e.sysSuffix(); suffix != "" {
+			system += "\n\n" + suffix
+		}
 	}
 	req := apiclient.Request{
 		System:   system,

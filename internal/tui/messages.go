@@ -29,6 +29,26 @@ type compactDoneMsg struct {
 	err     error
 }
 
+// planRequestMsg surfaces a pending plan-approval request to the model.
+type planRequestMsg struct {
+	pr planRequest
+}
+
+// waitForPlan blocks until the plan approver hands over a request.
+func waitForPlan(a *PlanApprover) tea.Cmd {
+	return func() tea.Msg {
+		return planRequestMsg{pr: <-a.requests}
+	}
+}
+
+// replyPlan delivers an approval decision back to a blocked ApprovePlan call.
+func replyPlan(pr planRequest, approved bool) tea.Cmd {
+	return func() tea.Msg {
+		pr.reply <- approved
+		return nil
+	}
+}
+
 // waitForEvent reads the next engine event. When the channel is closed it
 // reports the turn is done.
 func waitForEvent(ch <-chan engine.Event) tea.Cmd {

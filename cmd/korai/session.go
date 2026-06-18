@@ -25,6 +25,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/tools"
 	agenttool "github.com/Nevaero/korai-code-cli/internal/tools/agent"
 	memtool "github.com/Nevaero/korai-code-cli/internal/tools/memory"
+	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
 )
 
 // assembled is the wired-up session: everything the engine needs, plus the
@@ -66,7 +67,7 @@ func (a *assembled) close() {
 // config file), builds the tool registry (built-ins + memory + MCP + the Task
 // sub-agent tool), the slash-command registry (built-ins + skills), and the
 // lifecycle hook runner, and composes the system prompt with persistent memory.
-func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
+func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approver) (*assembled, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set")
@@ -124,6 +125,8 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 		client: client, registry: subRegistry, mode: mode, rules: rules, deps: deps, system: system,
 	}
 	registry.Register(agenttool.New(spawner))
+	// ExitPlanMode lives only in the main registry (never the sub-agent set).
+	registry.Register(plantool.New(modes, planApprover))
 
 	compactor := func(cctx context.Context, history []apiclient.Message) ([]apiclient.Message, error) {
 		return compact.Compact(cctx, client, history, compact.DefaultKeepRecent)
@@ -228,6 +231,27 @@ type subAgentSpawner struct {
 	rules    perm.Rules
 	deps     tool.Deps
 	system   string
+}
+
+// headlessPlanApprover resolves ExitPlanMode without a UI: it approves when the
+// operator passed --yes, otherwise rejects (fail-closed), mirroring the
+// headless permission asker.
+type headlessPlanApprover struct{ autoYes bool }
+
+// ApprovePlan implements plantool.Approver.
+func (a headlessPlanApprover) ApprovePlan(context.Context, string) (bool, error) {
+	return a.autoYes, nil
+}
+
+// planSuffix returns a function that supplies the plan-mode system prompt
+// addendum while the session is in plan mode, and nothing otherwise.
+func planSuffix(modes *perm.ModeSelector) func() string {
+	return func() string {
+		if modes.Get() == perm.ModePlan {
+			return prompt.PlanNote()
+		}
+		return ""
+	}
 }
 
 // togglePlan flips the selector between plan mode and default mode and returns

@@ -144,7 +144,7 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	sess, err := assemble(ctx, opts)
+	sess, err := assemble(ctx, opts, headlessPlanApprover{autoYes: opts.autoYes})
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,9 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	}
 	permEngine := perm.NewEngine(sess.modes, sess.rules, asker)
 
-	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models), engine.WithUsageRecorder(sess.cost.Add))
+	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
+		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
+		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)))
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: opts.prompt}}},
 	}
@@ -186,7 +188,8 @@ func runPrint(ctx context.Context, opts runOptions) error {
 // runTUI launches the interactive Bubble Tea REPL. Permission prompts are
 // resolved interactively by the TUI's own Asker, so --yes does not apply here.
 func runTUI(ctx context.Context, opts runOptions) error {
-	sess, err := assemble(ctx, opts)
+	planApprover := tui.NewPlanApprover()
+	sess, err := assemble(ctx, opts, planApprover)
 	if err != nil {
 		return err
 	}
@@ -194,9 +197,12 @@ func runTUI(ctx context.Context, opts runOptions) error {
 
 	asker := tui.NewAsker()
 	permEngine := perm.NewEngine(sess.modes, sess.rules, asker)
-	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps, engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models), engine.WithUsageRecorder(sess.cost.Add))
+	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
+		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
+		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)))
 
-	model := tui.New(eng, asker, sess.system, sess.commands).WithCompactor(sess.compactor).WithModes(sess.modes)
+	model := tui.New(eng, asker, sess.system, sess.commands).
+		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)

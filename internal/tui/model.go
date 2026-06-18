@@ -55,12 +55,14 @@ type Model struct {
 	viewport viewport.Model
 	styles   styles
 
-	compactor Compactor
-	modes     *perm.ModeSelector
+	compactor    Compactor
+	modes        *perm.ModeSelector
+	planApprover *PlanApprover
 
-	busy    bool
-	pending *permRequest
-	cancel  context.CancelFunc
+	busy        bool
+	pending     *permRequest
+	pendingPlan *planRequest
+	cancel      context.CancelFunc
 
 	width, height int
 	ready         bool
@@ -107,10 +109,21 @@ func (m Model) WithModes(s *perm.ModeSelector) Model {
 	return m
 }
 
-// Init starts the input cursor blink and begins listening for permission
-// requests from the engine.
+// WithPlanApprover returns a copy of the model wired to handle ExitPlanMode
+// approval requests from the given approver. Call before tea.NewProgram.
+func (m Model) WithPlanApprover(a *PlanApprover) Model {
+	m.planApprover = a
+	return m
+}
+
+// Init starts the input cursor blink and begins listening for permission and
+// plan-approval requests from the engine.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitForPermission(m.asker))
+	cmds := []tea.Cmd{textinput.Blink, waitForPermission(m.asker)}
+	if m.planApprover != nil {
+		cmds = append(cmds, waitForPlan(m.planApprover))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update is the pure state transition. All I/O is deferred to the returned Cmd.
@@ -129,6 +142,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case permRequestMsg:
 		m.pending = &msg.pr
+		return m, nil
+	case planRequestMsg:
+		m.pendingPlan = &msg.pr
 		return m, nil
 	case engineEventMsg:
 		return m.onEngineEvent(msg)
@@ -179,9 +195,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Permission dialog takes priority over all other input.
+	// Permission and plan-approval dialogs take priority over all other input.
 	if m.pending != nil {
 		return m.onDialogKey(msg)
+	}
+	if m.pendingPlan != nil {
+		return m.onPlanKey(msg)
 	}
 
 	// Shift+Tab cycles the permission mode (default → acceptEdits → plan).
@@ -226,6 +245,28 @@ func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.addEntry(kindInfo, fmt.Sprintf("%s %s", verb, pr.req.ToolName))
 	return m, tea.Batch(replyPermission(pr, decision), waitForPermission(m.asker))
+}
+
+// onPlanKey resolves a pending ExitPlanMode approval: y approves, n/esc rejects.
+func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var approved bool
+	switch msg.String() {
+	case "y", "Y":
+		approved = true
+	case "n", "N", "esc":
+		approved = false
+	default:
+		return m, nil
+	}
+
+	pr := *m.pendingPlan
+	m.pendingPlan = nil
+	if approved {
+		m.addEntry(kindInfo, "plan approved — leaving plan mode")
+	} else {
+		m.addEntry(kindInfo, "plan rejected — staying in plan mode")
+	}
+	return m, tea.Batch(replyPlan(pr, approved), waitForPlan(m.planApprover))
 }
 
 func (m Model) submit() (tea.Model, tea.Cmd) {
@@ -405,6 +446,8 @@ func (m Model) View() string {
 
 	var bottom string
 	switch {
+	case m.pendingPlan != nil:
+		bottom = m.renderPlanDialog()
 	case m.pending != nil:
 		bottom = m.renderDialog()
 	case m.busy:
@@ -446,6 +489,13 @@ func (m Model) renderDialog() string {
 		body = fmt.Sprintf("Allow %s?\n%s\n[y]es / [n]o", pr.req.ToolName, args)
 	}
 	return m.styles.dialog.Render(body)
+}
+
+// renderPlanDialog shows the proposed plan and the approve/reject prompt.
+func (m Model) renderPlanDialog() string {
+	body := "Proposed plan:\n\n" + strings.TrimSpace(m.pendingPlan.plan) +
+		"\n\n[y] approve & proceed   [n] keep planning"
+	return m.styles.dialog.Width(m.viewport.Width).Render(body)
 }
 
 // oneLine collapses content to a single trimmed line, truncated for display.

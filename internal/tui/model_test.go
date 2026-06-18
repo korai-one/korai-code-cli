@@ -472,3 +472,59 @@ func TestModeBadge(t *testing.T) {
 		t.Error("default mode should show no plan badge")
 	}
 }
+
+func TestPlanApprovalDialog(t *testing.T) {
+	t.Parallel()
+	approver := NewPlanApprover()
+	m := New(fakeRunner{}, NewAsker(), "system", testCommands()).WithPlanApprover(approver)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	pr := planRequest{plan: "step 1; step 2", reply: make(chan bool, 1)}
+	tm, _ = m.Update(planRequestMsg{pr: pr})
+	m = tm.(Model)
+	if m.pendingPlan == nil {
+		t.Fatal("pending plan should be set")
+	}
+	if !strings.Contains(m.View(), "step 1; step 2") {
+		t.Errorf("plan dialog should show the plan:\n%s", m.View())
+	}
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = tm.(Model)
+	if m.pendingPlan != nil {
+		t.Error("pending plan should clear after a decision")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command delivering the decision")
+	}
+	if e := lastEntry(m); e.kind != kindInfo || !strings.Contains(e.text, "approved") {
+		t.Errorf("expected approval info, got %+v", e)
+	}
+}
+
+func TestPlanApproverRoundTrip(t *testing.T) {
+	t.Parallel()
+	a := NewPlanApprover()
+
+	type result struct {
+		ok  bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ok, err := a.ApprovePlan(context.Background(), "the plan")
+		done <- result{ok, err}
+	}()
+
+	pr := <-a.requests
+	if pr.plan != "the plan" {
+		t.Errorf("plan = %q", pr.plan)
+	}
+	pr.reply <- true
+
+	got := <-done
+	if got.err != nil || !got.ok {
+		t.Errorf("ApprovePlan = (%v, %v), want (true, nil)", got.ok, got.err)
+	}
+}

@@ -20,6 +20,22 @@ Guidelines:
   give the answer.
 - Reference files as path:line so they are easy to locate.`
 
+// planNote is appended to the system prompt while the session is in plan mode.
+const planNote = `# Plan mode
+
+You are in PLAN MODE. Investigate the task using read-only tools only
+(ReadFile, Grep, Glob, WebFetch). Do NOT modify files, run mutating shell
+commands, or take any other action that changes state — those tools are
+blocked until a plan is approved.
+
+When you have enough understanding, call the ExitPlanMode tool with a concise,
+concrete plan of the steps you intend to take. The user will approve or reject
+it. Do not ask in prose; use ExitPlanMode. If the plan is rejected, revise it
+and call ExitPlanMode again.`
+
+// PlanNote returns the plan-mode addendum for the system prompt.
+func PlanNote() string { return planNote }
+
 // Compose returns the full system prompt: the agent instructions followed by
 // the session's environment context. envContext may be empty.
 func Compose(envContext string) string {
