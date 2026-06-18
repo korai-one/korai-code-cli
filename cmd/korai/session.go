@@ -32,12 +32,21 @@ type assembled struct {
 	client   apiclient.Client
 	registry *tool.Registry
 	commands *command.Registry
+	models   *apiclient.ModelSelector
 	hooks    engine.HookFunc
 	rules    perm.Rules
 	mode     perm.Mode
 	system   string
 	deps     tool.Deps
 	closers  []func() error
+}
+
+// availableModels is the set the /model command switches between. The active
+// model is always selectable even if it is not in this list.
+var availableModels = []string{
+	"claude-opus-4-8",
+	"claude-sonnet-4-6",
+	"claude-haiku-4-5",
 }
 
 // close releases session resources (e.g. MCP server connections).
@@ -82,6 +91,7 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 
 	deps := tool.Deps{WorkDir: wd}
 	client := apiclient.NewAnthropicClient(apiKey, model)
+	models := apiclient.NewModelSelector(model)
 	rules := perm.Rules{Allow: settings.Permissions.Allow, Deny: settings.Permissions.Deny}
 
 	system := prompt.Compose(appctx.Build(ctx, wd))
@@ -112,7 +122,8 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 	return &assembled{
 		client:   client,
 		registry: registry,
-		commands: buildCommands(home, wd, registry),
+		commands: buildCommands(home, wd, registry, models),
+		models:   models,
 		hooks:    buildHooks(settings.Hooks),
 		rules:    rules,
 		mode:     mode,
@@ -122,9 +133,9 @@ func assemble(ctx context.Context, opts runOptions) (*assembled, error) {
 	}, nil
 }
 
-// buildCommands assembles the slash-command registry: built-ins plus skills
-// discovered from the project and user skill directories.
-func buildCommands(home, wd string, registry *tool.Registry) *command.Registry {
+// buildCommands assembles the slash-command registry: built-ins, the /model
+// switcher, plus skills discovered from the project and user skill directories.
+func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -134,6 +145,7 @@ func buildCommands(home, wd string, registry *tool.Registry) *command.Registry {
 		}
 		return names
 	})
+	reg.Register(command.NewModelCommand(availableModels, models))
 
 	dirs := []string{filepath.Join(wd, ".korai", "skills")}
 	if home != "" {

@@ -60,8 +60,14 @@ func (c *AnthropicClient) buildParams(req Request) (anthropic.MessageNewParams, 
 		maxTokens = 8096
 	}
 
+	// req.Model overrides the client's default when set (e.g. the /model command).
+	model := c.model
+	if req.Model != "" {
+		model = req.Model
+	}
+
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(c.model),
+		Model:     anthropic.Model(model),
 		MaxTokens: maxTokens,
 		Messages:  msgs,
 	}

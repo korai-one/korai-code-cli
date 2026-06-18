@@ -32,6 +32,7 @@ type Engine struct {
 	perm     *perm.Engine
 	deps     tool.Deps
 	hooks    HookFunc
+	models   *apiclient.ModelSelector
 }
 
 // Option customizes an Engine.
@@ -40,6 +41,12 @@ type Option func(*Engine)
 // WithHooks attaches a lifecycle hook function. A nil function disables hooks.
 func WithHooks(h HookFunc) Option {
 	return func(e *Engine) { e.hooks = h }
+}
+
+// WithModelSelector attaches a model selector whose current value is stamped
+// onto each request, so the model can change between turns (e.g. via /model).
+func WithModelSelector(s *apiclient.ModelSelector) Option {
+	return func(e *Engine) { e.models = s }
 }
 
 // New creates an Engine with the given inference client, tool registry,
@@ -258,11 +265,15 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 			InputSchema: raw,
 		})
 	}
-	return apiclient.Request{
+	req := apiclient.Request{
 		System:   system,
 		Messages: history,
 		Tools:    toolDefs,
 	}
+	if e.models != nil {
+		req.Model = e.models.Get()
+	}
+	return req
 }
 
 func send(ch chan<- Event, e Event) {
