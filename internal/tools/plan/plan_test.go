@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -12,14 +15,15 @@ import (
 )
 
 type fakeApprover struct {
-	approve bool
-	err     error
-	gotPlan string
+	decision plantool.Decision
+	feedback string
+	err      error
+	gotPlan  string
 }
 
-func (a *fakeApprover) ApprovePlan(_ context.Context, p string) (bool, error) {
+func (a *fakeApprover) ApprovePlan(_ context.Context, p string) (plantool.Decision, string, error) {
 	a.gotPlan = p
-	return a.approve, a.err
+	return a.decision, a.feedback, a.err
 }
 
 func input(t *testing.T, plan string) json.RawMessage {
@@ -28,10 +32,12 @@ func input(t *testing.T, plan string) json.RawMessage {
 	return raw
 }
 
-func TestApproveSwitchesOutOfPlanMode(t *testing.T) {
+func TestApproveRestoresPrePlanMode(t *testing.T) {
 	t.Parallel()
-	modes := perm.NewModeSelector(perm.ModePlan)
-	ap := &fakeApprover{approve: true}
+	// User was in acceptEdits, then entered plan mode; approval restores it.
+	modes := perm.NewModeSelector(perm.ModeAcceptEdits)
+	modes.Set(perm.ModePlan)
+	ap := &fakeApprover{decision: plantool.Approve}
 	tl := plantool.New(modes, ap)
 
 	res, err := tl.Execute(context.Background(), input(t, "do X then Y"), tool.Deps{})
@@ -45,14 +51,42 @@ func TestApproveSwitchesOutOfPlanMode(t *testing.T) {
 		t.Errorf("approver got plan %q", ap.gotPlan)
 	}
 	if modes.Get() != perm.ModeAcceptEdits {
-		t.Errorf("mode = %v, want acceptEdits after approval", modes.Get())
+		t.Errorf("mode = %v, want acceptEdits restored after approval", modes.Get())
 	}
 }
 
-func TestRejectKeepsPlanMode(t *testing.T) {
+func TestApproveRestoresDefault(t *testing.T) {
+	t.Parallel()
+	modes := perm.NewModeSelector(perm.ModeDefault)
+	modes.Set(perm.ModePlan)
+	tl := plantool.New(modes, &fakeApprover{decision: plantool.Approve})
+
+	if _, err := tl.Execute(context.Background(), input(t, "p"), tool.Deps{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if modes.Get() != perm.ModeDefault {
+		t.Errorf("mode = %v, want default restored", modes.Get())
+	}
+}
+
+func TestApproveAcceptEdits(t *testing.T) {
+	t.Parallel()
+	modes := perm.NewModeSelector(perm.ModeDefault)
+	modes.Set(perm.ModePlan)
+	tl := plantool.New(modes, &fakeApprover{decision: plantool.ApproveAcceptEdits})
+
+	if _, err := tl.Execute(context.Background(), input(t, "p"), tool.Deps{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if modes.Get() != perm.ModeAcceptEdits {
+		t.Errorf("mode = %v, want acceptEdits", modes.Get())
+	}
+}
+
+func TestRejectRelaysFeedback(t *testing.T) {
 	t.Parallel()
 	modes := perm.NewModeSelector(perm.ModePlan)
-	tl := plantool.New(modes, &fakeApprover{approve: false})
+	tl := plantool.New(modes, &fakeApprover{decision: plantool.Reject, feedback: "use a worker pool"})
 
 	res, err := tl.Execute(context.Background(), input(t, "plan"), tool.Deps{})
 	if err != nil {
@@ -61,8 +95,36 @@ func TestRejectKeepsPlanMode(t *testing.T) {
 	if res.IsError {
 		t.Errorf("rejection should be non-error feedback, got error: %s", res.Content)
 	}
+	if !strings.Contains(res.Content, "use a worker pool") {
+		t.Errorf("feedback not relayed to the model: %q", res.Content)
+	}
 	if modes.Get() != perm.ModePlan {
 		t.Errorf("mode = %v, want plan retained after rejection", modes.Get())
+	}
+}
+
+func TestApproveSavesPlanFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	modes := perm.NewModeSelector(perm.ModeDefault)
+	modes.Set(perm.ModePlan)
+	tl := plantool.New(modes, &fakeApprover{decision: plantool.Approve})
+
+	res, err := tl.Execute(context.Background(), input(t, "Build the thing\nstep 1\nstep 2"), tool.Deps{WorkDir: dir})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	plansDir := filepath.Join(dir, ".korai", "plans")
+	entries, err := os.ReadDir(plansDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected one saved plan file, got %v (err %v)", entries, err)
+	}
+	if !strings.Contains(res.Content, ".korai/plans/") {
+		t.Errorf("result should mention the saved plan path: %q", res.Content)
+	}
+	data, _ := os.ReadFile(filepath.Join(plansDir, entries[0].Name()))
+	if !strings.Contains(string(data), "step 1") {
+		t.Errorf("saved plan content = %q", data)
 	}
 }
 
@@ -85,7 +147,7 @@ func TestApproverError(t *testing.T) {
 
 func TestEmptyPlanAndBadInput(t *testing.T) {
 	t.Parallel()
-	tl := plantool.New(perm.NewModeSelector(perm.ModePlan), &fakeApprover{approve: true})
+	tl := plantool.New(perm.NewModeSelector(perm.ModePlan), &fakeApprover{decision: plantool.Approve})
 
 	res, err := tl.Execute(context.Background(), input(t, ""), tool.Deps{})
 	if err != nil {

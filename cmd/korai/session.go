@@ -365,9 +365,14 @@ type subAgentSpawner struct {
 // headless permission asker.
 type headlessPlanApprover struct{ autoYes bool }
 
-// ApprovePlan implements plantool.Approver.
-func (a headlessPlanApprover) ApprovePlan(context.Context, string) (bool, error) {
-	return a.autoYes, nil
+// ApprovePlan implements plantool.Approver. With --yes it approves and switches
+// to acceptEdits so the plan can be carried out; otherwise it rejects
+// (fail-closed). Headless runs collect no feedback.
+func (a headlessPlanApprover) ApprovePlan(context.Context, string) (plantool.Decision, string, error) {
+	if a.autoYes {
+		return plantool.ApproveAcceptEdits, "", nil
+	}
+	return plantool.Reject, "", nil
 }
 
 // planSuffix returns a function that supplies the plan-mode system prompt

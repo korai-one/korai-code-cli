@@ -8,6 +8,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
+	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
 )
 
 // engineEventMsg carries one engine event plus the channel it came from, so the
@@ -56,10 +57,11 @@ func waitForPlan(a *PlanApprover) tea.Cmd {
 	}
 }
 
-// replyPlan delivers an approval decision back to a blocked ApprovePlan call.
-func replyPlan(pr planRequest, approved bool) tea.Cmd {
+// replyPlan delivers a plan decision (and any feedback) back to a blocked
+// ApprovePlan call.
+func replyPlan(pr planRequest, decision plantool.Decision, feedback string) tea.Cmd {
 	return func() tea.Msg {
-		pr.reply <- approved
+		pr.reply <- planReply{decision: decision, feedback: feedback}
 		return nil
 	}
 }

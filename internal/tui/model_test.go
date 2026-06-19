@@ -13,6 +13,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
+	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
 )
 
 // testCommands returns a registry with the built-in commands for TUI tests.
@@ -487,7 +488,7 @@ func TestPlanApprovalDialog(t *testing.T) {
 	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = tm.(Model)
 
-	pr := planRequest{plan: "step 1; step 2", reply: make(chan bool, 1)}
+	pr := planRequest{plan: "step 1; step 2", reply: make(chan planReply, 1)}
 	tm, _ = m.Update(planRequestMsg{pr: pr})
 	m = tm.(Model)
 	if m.pendingPlan == nil {
@@ -510,29 +511,65 @@ func TestPlanApprovalDialog(t *testing.T) {
 	}
 }
 
+// TestPlanFeedbackFlow checks that "n" opens the feedback box and submitting it
+// rejects the plan, while the plan stays pending until then.
+func TestPlanFeedbackFlow(t *testing.T) {
+	t.Parallel()
+	approver := NewPlanApprover()
+	m := New(fakeRunner{}, NewAsker(), "system", testCommands()).WithPlanApprover(approver)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	pr := planRequest{plan: "a plan", reply: make(chan planReply, 1)}
+	tm, _ = m.Update(planRequestMsg{pr: pr})
+	m = tm.(Model)
+
+	// "n" opens the feedback box without resolving the plan.
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = tm.(Model)
+	if !m.planFeedback || m.pendingPlan == nil {
+		t.Fatal(`"n" should open feedback while keeping the plan pending`)
+	}
+	if !strings.Contains(m.View(), "what to change") && !strings.Contains(m.View(), "Keep planning") {
+		t.Errorf("feedback box not shown:\n%s", m.View())
+	}
+
+	// Type feedback and submit; the plan resolves and feedback mode ends.
+	m.input.SetValue("use channels")
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+	if m.planFeedback || m.pendingPlan != nil {
+		t.Error("submitting feedback should resolve the plan and exit feedback mode")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command delivering the rejection+feedback")
+	}
+}
+
 func TestPlanApproverRoundTrip(t *testing.T) {
 	t.Parallel()
 	a := NewPlanApprover()
 
 	type result struct {
-		ok  bool
-		err error
+		decision plantool.Decision
+		feedback string
+		err      error
 	}
 	done := make(chan result, 1)
 	go func() {
-		ok, err := a.ApprovePlan(context.Background(), "the plan")
-		done <- result{ok, err}
+		d, fb, err := a.ApprovePlan(context.Background(), "the plan")
+		done <- result{d, fb, err}
 	}()
 
 	pr := <-a.requests
 	if pr.plan != "the plan" {
 		t.Errorf("plan = %q", pr.plan)
 	}
-	pr.reply <- true
+	pr.reply <- planReply{decision: plantool.Reject, feedback: "fix it"}
 
 	got := <-done
-	if got.err != nil || !got.ok {
-		t.Errorf("ApprovePlan = (%v, %v), want (true, nil)", got.ok, got.err)
+	if got.err != nil || got.decision != plantool.Reject || got.feedback != "fix it" {
+		t.Errorf("ApprovePlan = (%v, %q, %v), want (Reject, \"fix it\", nil)", got.decision, got.feedback, got.err)
 	}
 }
 

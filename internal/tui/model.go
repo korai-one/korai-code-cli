@@ -24,6 +24,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
+	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
 )
 
 type entryKind int
@@ -113,10 +114,11 @@ type Model struct {
 	sessionID    string
 	sessionStart time.Time
 
-	busy        bool
-	pending     *permRequest
-	pendingPlan *planRequest
-	cancel      context.CancelFunc
+	busy         bool
+	pending      *permRequest
+	pendingPlan  *planRequest
+	planFeedback bool // collecting "keep planning" feedback in the input
+	cancel       context.CancelFunc
 
 	width, height int
 	ready         bool
@@ -427,6 +429,9 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onDialogKey(msg)
 	}
 	if m.pendingPlan != nil {
+		if m.planFeedback {
+			return m.onPlanFeedbackKey(msg)
+		}
 		return m.onPlanKey(msg)
 	}
 
@@ -675,26 +680,54 @@ func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(replyPermission(pr, decision), waitForPermission(m.asker))
 }
 
-// onPlanKey resolves a pending ExitPlanMode approval: y approves, n/esc rejects.
+// onPlanKey resolves a pending ExitPlanMode approval. y approves and restores
+// the pre-plan mode; a approves and switches to acceptEdits; n opens a feedback
+// box to keep planning; esc keeps planning without feedback.
 func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var approved bool
 	switch msg.String() {
 	case "y", "Y":
-		approved = true
-	case "n", "N", "esc":
-		approved = false
-	default:
+		return m.resolvePlan(plantool.Approve, "", "plan approved — leaving plan mode")
+	case "a", "A":
+		return m.resolvePlan(plantool.ApproveAcceptEdits, "", "plan approved — accept edits")
+	case "esc":
+		return m.resolvePlan(plantool.Reject, "", "plan rejected — staying in plan mode")
+	case "n", "N":
+		// Open a feedback box; the decision is sent when it is submitted.
+		m.planFeedback = true
+		m.input.Reset()
+		m.input.Placeholder = "what to change (enter to send, esc to skip)…"
 		return m, nil
 	}
+	return m, nil
+}
 
+// onPlanFeedbackKey handles the "keep planning" feedback box: enter sends the
+// feedback with a reject, esc cancels back to the dialog.
+func (m Model) onPlanFeedbackKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		feedback := strings.TrimSpace(m.input.Value())
+		m.input.Reset()
+		m.input.Placeholder = "Ask Korai…"
+		m.planFeedback = false
+		return m.resolvePlan(plantool.Reject, feedback, "plan rejected — revising")
+	case "esc":
+		m.input.Reset()
+		m.input.Placeholder = "Ask Korai…"
+		m.planFeedback = false
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// resolvePlan delivers a plan decision, records a note, and re-arms the listener.
+func (m Model) resolvePlan(decision plantool.Decision, feedback, note string) (tea.Model, tea.Cmd) {
 	pr := *m.pendingPlan
 	m.pendingPlan = nil
-	if approved {
-		m.addEntry(kindInfo, "plan approved — leaving plan mode")
-	} else {
-		m.addEntry(kindInfo, "plan rejected — staying in plan mode")
-	}
-	return m, tea.Batch(replyPlan(pr, approved), waitForPlan(m.planApprover))
+	m.addEntry(kindInfo, note)
+	return m, tea.Batch(replyPlan(pr, decision, feedback), waitForPlan(m.planApprover))
 }
 
 func (m Model) submit() (tea.Model, tea.Cmd) {
@@ -1032,6 +1065,8 @@ func (m Model) View() string {
 
 	var bottom string
 	switch {
+	case m.pendingPlan != nil && m.planFeedback:
+		bottom = m.renderPlanFeedback()
 	case m.pendingPlan != nil:
 		bottom = m.renderPlanDialog()
 	case m.pending != nil:
@@ -1194,10 +1229,17 @@ func (m Model) renderDialog() string {
 	return m.styles.dialog.Render(body)
 }
 
-// renderPlanDialog shows the proposed plan and the approve/reject prompt.
+// renderPlanDialog shows the proposed plan and the approval options.
 func (m Model) renderPlanDialog() string {
 	body := "Proposed plan:\n\n" + strings.TrimSpace(m.pendingPlan.plan) +
-		"\n\n[y] approve & proceed   [n] keep planning"
+		"\n\n[y] approve   [a] approve & accept edits   [n] keep planning + feedback   esc keep planning"
+	return m.styles.dialog.Width(m.viewport.Width).Render(body)
+}
+
+// renderPlanFeedback shows the "keep planning" feedback box.
+func (m Model) renderPlanFeedback() string {
+	body := "Keep planning — tell the agent what to change:\n\n" + m.input.View() +
+		"\n\nenter to send · esc to skip"
 	return m.styles.dialog.Width(m.viewport.Width).Render(body)
 }
 

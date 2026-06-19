@@ -6,8 +6,9 @@ import "sync"
 // The permission engine reads it on every resolution; the /plan command and the
 // TUI's shift+tab handler write it, so access is mutex-guarded.
 type ModeSelector struct {
-	mu   sync.RWMutex
-	mode Mode
+	mu      sync.RWMutex
+	mode    Mode
+	prePlan Mode // mode active immediately before plan mode was entered
 }
 
 // NewModeSelector returns a selector initialized to mode.
@@ -22,11 +23,24 @@ func (s *ModeSelector) Get() Mode {
 	return s.mode
 }
 
-// Set updates the current mode.
+// Set updates the current mode. Entering plan mode from another mode records the
+// previous mode (see PrePlan), so it can be restored when the plan is approved.
 func (s *ModeSelector) Set(mode Mode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if mode == ModePlan && s.mode != ModePlan {
+		s.prePlan = s.mode
+	}
 	s.mode = mode
+}
+
+// PrePlan returns the mode that was active before plan mode was last entered, so
+// approving a plan can restore where the user left off. It is ModeDefault until
+// plan mode is entered.
+func (s *ModeSelector) PrePlan() Mode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.prePlan
 }
 
 // cycleOrder is the interactive shift+tab rotation. bypassPermissions is left
@@ -46,6 +60,9 @@ func (s *ModeSelector) Cycle() Mode {
 			next = cycleOrder[(i+1)%len(cycleOrder)]
 			break
 		}
+	}
+	if next == ModePlan && s.mode != ModePlan {
+		s.prePlan = s.mode
 	}
 	s.mode = next
 	return next

@@ -30,6 +30,29 @@ func TestModeSelectorCycle(t *testing.T) {
 	}
 }
 
+func TestModeSelectorPrePlan(t *testing.T) {
+	t.Parallel()
+	s := perm.NewModeSelector(perm.ModeDefault)
+	if s.PrePlan() != perm.ModeDefault {
+		t.Errorf("PrePlan before any plan = %v, want default", s.PrePlan())
+	}
+
+	// Entering plan from acceptEdits records acceptEdits as the pre-plan mode.
+	s.Set(perm.ModeAcceptEdits)
+	s.Set(perm.ModePlan)
+	if s.PrePlan() != perm.ModeAcceptEdits {
+		t.Errorf("PrePlan = %v, want acceptEdits", s.PrePlan())
+	}
+
+	// Cycling into plan also records the prior mode (default → acceptEdits → plan).
+	c := perm.NewModeSelector(perm.ModeDefault)
+	c.Cycle() // acceptEdits
+	c.Cycle() // plan
+	if c.PrePlan() != perm.ModeAcceptEdits {
+		t.Errorf("PrePlan after cycle = %v, want acceptEdits", c.PrePlan())
+	}
+}
+
 func TestModeSelectorCycleFromBypass(t *testing.T) {
 	t.Parallel()
 	s := perm.NewModeSelector(perm.ModeBypassPermissions)
