@@ -259,6 +259,14 @@ func firstUserText(msgs []apiclient.Message) string {
 	return ""
 }
 
+// aboutText is the message shown by /about: version and a one-line description.
+func aboutText() string {
+	return fmt.Sprintf(
+		"Korai Code CLI %s\nAI coding agent on the Korai P2P inference network.\nhttps://github.com/Nevaero/korai-code-cli",
+		version,
+	)
+}
+
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
@@ -272,6 +280,7 @@ func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.M
 		}
 		return names
 	})
+	reg.Register(command.NewAboutCommand(aboutText()))
 	reg.Register(command.NewModelCommand(availableModels, models))
 	reg.Register(command.NewCostCommand(costTracker.Summary))
 	reg.Register(command.NewCompactCommand())

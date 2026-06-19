@@ -67,6 +67,24 @@ func (c *resumeCommand) Run(args string) (Result, error) {
 	return Result{Action: ResumeSession, Text: id}, nil
 }
 
+// aboutCommand shows version and project information.
+type aboutCommand struct{ text string }
+
+// NewAboutCommand returns an /about command that displays text — typically the
+// version and a one-line description of the project.
+func NewAboutCommand(text string) Command { return &aboutCommand{text: text} }
+
+// Name returns "about".
+func (*aboutCommand) Name() string { return "about" }
+
+// Description returns the command summary.
+func (*aboutCommand) Description() string { return "show version and project information" }
+
+// Run displays the about text.
+func (c *aboutCommand) Run(string) (Result, error) {
+	return Result{Action: ShowText, Text: c.text}, nil
+}
+
 // planCommand toggles plan mode (read-only research) on or off.
 type planCommand struct{ toggle func() string }
 

@@ -152,7 +152,7 @@ window.
 
 ### Slash commands & skills
 
-Built-ins: `/help`, `/clear`, `/quit`, `/tools`, `/model`, `/cost`, `/compact`, `/plan`, `/resume`.
+Built-ins: `/help`, `/clear`, `/quit`, `/tools`, `/about`, `/model`, `/cost`, `/compact`, `/plan`, `/resume`.
 Bundled skills (`/commit`, `/review`) are embedded via `go:embed` in
 `internal/skill/builtins/`. Any `.korai/skills/*.md` becomes a command;
 project/user skills override bundled ones by name. **To add a skill:** drop a

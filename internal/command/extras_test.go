@@ -22,6 +22,21 @@ func TestCostCommand(t *testing.T) {
 	}
 }
 
+func TestAboutCommand(t *testing.T) {
+	t.Parallel()
+	cmd := command.NewAboutCommand("Korai Code CLI 1.2.3")
+	res, err := cmd.Run("")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Action != command.ShowText || !strings.Contains(res.Text, "1.2.3") {
+		t.Errorf("result = %+v", res)
+	}
+	if cmd.Name() != "about" {
+		t.Errorf("name = %q, want about", cmd.Name())
+	}
+}
+
 func TestCompactCommand(t *testing.T) {
 	t.Parallel()
 	cmd := command.NewCompactCommand()
