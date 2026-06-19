@@ -117,6 +117,7 @@ type Model struct {
 	busy         bool
 	pending      *permRequest
 	pendingPlan  *planRequest
+	planChoice   int  // selected option in the plan-approval dialog
 	planFeedback bool // collecting "keep planning" feedback in the input
 	cancel       context.CancelFunc
 
@@ -291,6 +292,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case planRequestMsg:
 		m.pendingPlan = &msg.pr
+		m.planChoice = 0
 		return m, nil
 	case filesLoadedMsg:
 		m.files = msg.paths
@@ -680,23 +682,38 @@ func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(replyPermission(pr, decision), waitForPermission(m.asker))
 }
 
-// onPlanKey resolves a pending ExitPlanMode approval. y approves and restores
-// the pre-plan mode; a approves and switches to acceptEdits; n opens a feedback
-// box to keep planning; esc keeps planning without feedback.
+// planOptions are the choices in the plan-approval dialog, selected with ↑/↓.
+var planOptions = []string{
+	"Approve",
+	"Approve & accept edits",
+	"Keep planning (give feedback)",
+}
+
+// onPlanKey drives the plan-approval dialog: ↑/↓ (and ctrl+p/n) move the
+// selection, enter activates it, esc keeps planning without feedback.
 func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
-		return m.resolvePlan(plantool.Approve, "", "plan approved — leaving plan mode")
-	case "a", "A":
-		return m.resolvePlan(plantool.ApproveAcceptEdits, "", "plan approved — accept edits")
+	case "up", "ctrl+p":
+		m.planChoice = (m.planChoice - 1 + len(planOptions)) % len(planOptions)
+		return m, nil
+	case "down", "ctrl+n":
+		m.planChoice = (m.planChoice + 1) % len(planOptions)
+		return m, nil
 	case "esc":
 		return m.resolvePlan(plantool.Reject, "", "plan rejected — staying in plan mode")
-	case "n", "N":
-		// Open a feedback box; the decision is sent when it is submitted.
-		m.planFeedback = true
-		m.input.Reset()
-		m.input.Placeholder = "what to change (enter to send, esc to skip)…"
-		return m, nil
+	case "enter":
+		switch m.planChoice {
+		case 0:
+			return m.resolvePlan(plantool.Approve, "", "plan approved — leaving plan mode")
+		case 1:
+			return m.resolvePlan(plantool.ApproveAcceptEdits, "", "plan approved — accept edits")
+		default:
+			// Open a feedback box; the rejection is sent when it is submitted.
+			m.planFeedback = true
+			m.input.Reset()
+			m.input.Placeholder = "what to change (enter to send, esc to skip)…"
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -1229,11 +1246,23 @@ func (m Model) renderDialog() string {
 	return m.styles.dialog.Render(body)
 }
 
-// renderPlanDialog shows the proposed plan and the approval options.
+// renderPlanDialog shows the proposed plan and the approval options as a
+// selectable list (↑/↓ to move, enter to confirm).
 func (m Model) renderPlanDialog() string {
-	body := "Proposed plan:\n\n" + strings.TrimSpace(m.pendingPlan.plan) +
-		"\n\n[y] approve   [a] approve & accept edits   [n] keep planning + feedback   esc keep planning"
-	return m.styles.dialog.Width(m.viewport.Width).Render(body)
+	var b strings.Builder
+	b.WriteString("Proposed plan:\n\n")
+	b.WriteString(strings.TrimSpace(m.pendingPlan.plan))
+	b.WriteString("\n\n")
+	for i, opt := range planOptions {
+		if i == m.planChoice {
+			b.WriteString(m.styles.menuSel.Render("› " + opt))
+		} else {
+			b.WriteString(m.styles.menuItem.Render("  " + opt))
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString(m.styles.status.Render("↑/↓ select · enter confirm · esc keep planning"))
+	return m.styles.dialog.Width(m.viewport.Width).Render(b.String())
 }
 
 // renderPlanFeedback shows the "keep planning" feedback box.

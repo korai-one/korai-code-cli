@@ -498,7 +498,8 @@ func TestPlanApprovalDialog(t *testing.T) {
 		t.Errorf("plan dialog should show the plan:\n%s", m.View())
 	}
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	// Default selection is "Approve"; enter confirms it.
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = tm.(Model)
 	if m.pendingPlan != nil {
 		t.Error("pending plan should clear after a decision")
@@ -524,11 +525,19 @@ func TestPlanFeedbackFlow(t *testing.T) {
 	tm, _ = m.Update(planRequestMsg{pr: pr})
 	m = tm.(Model)
 
-	// "n" opens the feedback box without resolving the plan.
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	// Select "Keep planning (give feedback)" (3rd option) and confirm; this
+	// opens the feedback box without resolving the plan.
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = tm.(Model)
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = tm.(Model)
+	if m.planChoice != 2 {
+		t.Fatalf("two downs should select option 2, got %d", m.planChoice)
+	}
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = tm.(Model)
 	if !m.planFeedback || m.pendingPlan == nil {
-		t.Fatal(`"n" should open feedback while keeping the plan pending`)
+		t.Fatal("confirming the feedback option should open feedback while keeping the plan pending")
 	}
 	if !strings.Contains(m.View(), "what to change") && !strings.Contains(m.View(), "Keep planning") {
 		t.Errorf("feedback box not shown:\n%s", m.View())
