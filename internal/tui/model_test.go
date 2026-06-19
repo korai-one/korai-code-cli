@@ -265,7 +265,8 @@ func TestPermissionDialogClearsAndLogs(t *testing.T) {
 		t.Fatal("pending request should be set")
 	}
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	// Default selection is "Allow once"; enter confirms it.
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = tm.(Model)
 	if m.pending != nil {
 		t.Error("pending should clear after a decision")

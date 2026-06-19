@@ -116,6 +116,7 @@ type Model struct {
 
 	busy         bool
 	pending      *permRequest
+	dialogChoice int // selected option in the permission dialog
 	pendingPlan  *planRequest
 	planChoice   int  // selected option in the plan-approval dialog
 	planFeedback bool // collecting "keep planning" feedback in the input
@@ -289,6 +290,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(replyPermission(msg.pr, perm.DecisionAllow), waitForPermission(m.asker))
 		}
 		m.pending = &msg.pr
+		m.dialogChoice = 0
 		return m, nil
 	case planRequestMsg:
 		m.pendingPlan = &msg.pr
@@ -651,23 +653,41 @@ func (m *Model) scrollToMatch() {
 	}
 }
 
-func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var (
-		decision   perm.Decision
-		forSession bool
-	)
-	switch msg.String() {
-	case "y", "Y":
-		decision = perm.DecisionAllow
-	case "a", "A":
-		decision = perm.DecisionAllow
-		forSession = true
-	case "n", "N", "esc":
-		decision = perm.DecisionDeny
-	default:
-		return m, nil
-	}
+// permOptions are the choices in the permission dialog, selected with ↑/↓.
+var permOptions = []string{
+	"Allow once",
+	"Allow for session",
+	"Deny",
+}
 
+// onDialogKey drives the permission dialog: ↑/↓ (and ctrl+p/n) move the
+// selection, enter activates it, esc denies.
+func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "ctrl+p":
+		m.dialogChoice = (m.dialogChoice - 1 + len(permOptions)) % len(permOptions)
+		return m, nil
+	case "down", "ctrl+n":
+		m.dialogChoice = (m.dialogChoice + 1) % len(permOptions)
+		return m, nil
+	case "esc":
+		return m.resolvePermission(perm.DecisionDeny, false)
+	case "enter":
+		switch m.dialogChoice {
+		case 0:
+			return m.resolvePermission(perm.DecisionAllow, false)
+		case 1:
+			return m.resolvePermission(perm.DecisionAllow, true)
+		default:
+			return m.resolvePermission(perm.DecisionDeny, false)
+		}
+	}
+	return m, nil
+}
+
+// resolvePermission delivers the decision, records the choice (remembering a
+// session allow), and re-arms the listener.
+func (m Model) resolvePermission(decision perm.Decision, forSession bool) (tea.Model, tea.Cmd) {
 	pr := *m.pending
 	m.pending = nil
 	verb := "denied"
@@ -1238,12 +1258,22 @@ func (m Model) modeBadge() string {
 
 func (m Model) renderDialog() string {
 	pr := m.pending
-	const prompt = "[y]es once   [a]lways (session)   [n]o"
-	body := fmt.Sprintf("Allow %s?\n%s", pr.req.ToolName, prompt)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Allow %s?", pr.req.ToolName)
 	if args := oneLine(string(pr.req.Input)); args != "" {
-		body = fmt.Sprintf("Allow %s?\n%s\n%s", pr.req.ToolName, args, prompt)
+		b.WriteString("\n" + args)
 	}
-	return m.styles.dialog.Render(body)
+	b.WriteString("\n\n")
+	for i, opt := range permOptions {
+		if i == m.dialogChoice {
+			b.WriteString(m.styles.menuSel.Render("› " + opt))
+		} else {
+			b.WriteString(m.styles.menuItem.Render("  " + opt))
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString(m.styles.status.Render("↑/↓ select · enter confirm · esc deny"))
+	return m.styles.dialog.Render(b.String())
 }
 
 // renderPlanDialog shows the proposed plan and the approval options as a

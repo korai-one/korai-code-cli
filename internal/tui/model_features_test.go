@@ -89,20 +89,26 @@ func TestSessionAllowAutoApproves(t *testing.T) {
 	}
 }
 
-// TestPermissionAllowForSession records the tool when the user picks "always".
+// TestPermissionAllowForSession records the tool when the user selects
+// "Allow for session" (second option) and confirms.
 func TestPermissionAllowForSession(t *testing.T) {
 	t.Parallel()
 	m := ready(fakeRunner{})
 	pr := permRequest{req: perm.Request{ToolName: "Bash"}, reply: make(chan perm.Decision, 1)}
 	m.pending = &pr
 
-	tm, _ := m.Update(keyRunes("a"))
+	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown}) // select "Allow for session"
+	m = tm.(Model)
+	if m.dialogChoice != 1 {
+		t.Fatalf("one down should select option 1, got %d", m.dialogChoice)
+	}
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = tm.(Model)
 	if m.pending != nil {
 		t.Error("dialog should close after a decision")
 	}
 	if !m.sessionAllowed["Bash"] {
-		t.Error(`"always" should record the tool as session-allowed`)
+		t.Error(`"Allow for session" should record the tool as session-allowed`)
 	}
 }
 
