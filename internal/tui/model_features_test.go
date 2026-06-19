@@ -211,6 +211,23 @@ func TestViewportLeavesRoomForChrome(t *testing.T) {
 	}
 }
 
+// TestWelcomeShownWhenEmpty renders the version banner on an empty transcript
+// and replaces it once there is content.
+func TestWelcomeShownWhenEmpty(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{}).WithVersion("9.9.9")
+
+	out := m.renderEntries()
+	if !strings.Contains(out, "9.9.9") || !strings.Contains(out, "Korai Code CLI") {
+		t.Errorf("welcome should show the version and tagline, got:\n%s", out)
+	}
+
+	m.addEntry(kindUser, "hello")
+	if got := m.renderEntries(); strings.Contains(got, "Korai Code CLI") {
+		t.Error("welcome banner should disappear once the transcript has content")
+	}
+}
+
 // TestMenuOpensOnSlash shows the command menu the moment "/" is typed.
 func TestMenuOpensOnSlash(t *testing.T) {
 	t.Parallel()

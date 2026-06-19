@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
@@ -59,6 +60,7 @@ type Model struct {
 	asker    *Asker
 	system   string
 	commands *command.Registry
+	version  string
 
 	history   []apiclient.Message
 	entries   []entry
@@ -124,10 +126,13 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 	ti := textinput.New()
 	ti.Placeholder = "Ask Korai…"
 	ti.Prompt = "› "
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(colBlue).Bold(true)
+	ti.Cursor.Style = lipgloss.NewStyle().Foreground(colPurple)
 	ti.Focus()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(colPurple)
 
 	return Model{
 		runner:         runner,
@@ -139,6 +144,13 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 		styles:         newStyles(),
 		sessionAllowed: make(map[string]bool),
 	}
+}
+
+// WithVersion sets the version string shown in the start-up welcome banner.
+// Call before tea.NewProgram.
+func (m Model) WithVersion(v string) Model {
+	m.version = v
+	return m
 }
 
 // WithModels wires the active-model selector so the status line can show the
@@ -877,6 +889,9 @@ func (m *Model) refreshViewport() {
 // re-rendering every token is wasteful. Tool calls show a "●" bullet, their
 // results a "⎿" connector.
 func (m *Model) renderEntries() string {
+	if len(m.entries) == 0 {
+		return m.welcomeView()
+	}
 	w := m.viewport.Width
 	m.entryOffsets = make([]int, len(m.entries))
 	var b strings.Builder

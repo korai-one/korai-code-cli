@@ -22,6 +22,10 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/tui"
 )
 
+// version is the Korai CLI version, shown by --version and the TUI welcome
+// banner. Bump on release; a build system may override it via -ldflags.
+const version = "0.1.0"
+
 func main() {
 	if err := rootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -73,8 +77,9 @@ func rootCmd() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:   "korai [prompt]",
-		Short: "Korai Code CLI — an AI coding agent on the Korai P2P inference network",
+		Use:     "korai [prompt]",
+		Version: version,
+		Short:   "Korai Code CLI — an AI coding agent on the Korai P2P inference network",
 		Long: "Korai Code CLI — an AI coding agent on the Korai P2P inference network.\n\n" +
 			"Starts an interactive session by default. Use -p/--print for non-interactive\n" +
 			"output, with the prompt as an argument or piped on stdin.",
@@ -226,6 +231,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 
 	model := tui.New(eng, asker, sess.system, sess.commands).
+		WithVersion(version).
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
 		WithModels(sess.models).WithCost(sess.cost).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
