@@ -366,6 +366,7 @@ A unit (tool/service/screen) is done when **all** are true:
 - LLM: `github.com/anthropics/anthropic-sdk-go`
 - MCP: `github.com/modelcontextprotocol/go-sdk`
 - Schema: `github.com/invopop/jsonschema`
+- Config: `github.com/joho/godotenv` (loads `.env` for local development)
 - Concurrency: `golang.org/x/sync/errgroup`
 - Test compare: `github.com/google/go-cmp`
 - Stdlib for everything else (`log/slog`, `net/http`, `os/exec`, `context`, ...).

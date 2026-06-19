@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/compact"
@@ -76,9 +78,16 @@ func (a *assembled) close() {
 // sub-agent tool), the slash-command registry (built-ins + skills), and the
 // lifecycle hook runner, and composes the system prompt with persistent memory.
 func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approver) (*assembled, error) {
+	// Load .env from the working directory as a fallback for local development.
+	// godotenv.Load does not override variables already set in the real
+	// environment, so an exported key still takes precedence; a missing file is
+	// not an error.
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("loading .env: %w", err)
+	}
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set")
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set (export it or put it in a .env file)")
 	}
 	wd, err := os.Getwd()
 	if err != nil {
