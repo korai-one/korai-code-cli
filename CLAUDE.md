@@ -135,12 +135,20 @@ suffix (`engine.WithSystemSuffix`) tells the agent to investigate then call the
 
 ### Sessions (`internal/session`) & resume
 
-Conversations auto-save to `~/.korai/sessions/<id>.json` after every turn (the
-`ContentBlock` interface is persisted via a tagged DTO, keeping `apiclient`
-free of JSON concerns). `--continue`/`-c` resumes the latest session for the
-cwd, `--resume <id>` a specific one, and `/resume` lists/loads them live. The
-engine auto-compacts (`engine.WithAutoCompact`) when history grows past
-`compact.DefaultThreshold` so long sessions don't blow the context window.
+Conversations auto-save to `~/.korai/sessions/<id>.jsonl` after every turn. Each
+file is a header line of metadata followed by one line per message; `Save`
+appends only the messages not yet on disk and rewrites the whole file only when
+history is replaced (e.g. by compaction, when it shrinks). Files are written
+`0600` in a `0700` dir (private to the user). The `ContentBlock` interface is
+persisted via a tagged DTO, keeping `apiclient` free of JSON concerns. Message
+lines pass through a `session.Codec` — the seam for at-rest encryption: today
+the plaintext `PlainCodec` (`"none"`, recorded in the header) is the only one;
+a future encrypting codec wired via `Store.WithCodec` is recorded by name so
+`Load` selects the matching decoder. `--continue`/`-c` resumes the latest
+session for the cwd, `--resume <id>` a specific one, and `/resume` lists/loads
+them live. The engine auto-compacts (`engine.WithAutoCompact`) when history
+grows past `compact.DefaultThreshold` so long sessions don't blow the context
+window.
 
 ### Slash commands & skills
 

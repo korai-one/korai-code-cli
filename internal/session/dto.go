@@ -8,20 +8,40 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 )
 
-// recordDTO is the on-disk shape of a Record. Messages use blockDTO so the
-// apiclient.ContentBlock interface round-trips with an explicit type tag.
-type recordDTO struct {
-	ID       string       `json:"id"`
-	Created  time.Time    `json:"created"`
-	Updated  time.Time    `json:"updated"`
-	CWD      string       `json:"cwd"`
-	Model    string       `json:"model"`
-	Messages []messageDTO `json:"messages"`
+// formatVersion is the on-disk JSONL schema version, recorded in the header so
+// future format changes can be detected.
+const formatVersion = 1
+
+// entry kinds, used as the first field of every JSONL line.
+const (
+	kindHeader  = "header"
+	kindMessage = "message"
+)
+
+// headerDTO is the first line of a session file: metadata written once when the
+// file is created. It records the codec name (Enc) so Load can decode message
+// lines, and is always stored in the clear.
+type headerDTO struct {
+	Kind    string    `json:"kind"` // always kindHeader
+	Version int       `json:"version"`
+	ID      string    `json:"id"`
+	Created time.Time `json:"created"`
+	CWD     string    `json:"cwd"`
+	Model   string    `json:"model"`
+	Enc     string    `json:"enc"` // codec name; "none" = plaintext
 }
 
+// messageDTO is one appended conversation message. Content uses blockDTO so the
+// apiclient.ContentBlock interface round-trips with an explicit type tag.
 type messageDTO struct {
+	Kind    string     `json:"kind"` // always kindMessage
 	Role    string     `json:"role"`
 	Content []blockDTO `json:"content"`
+}
+
+// kindPeek reads just the discriminator field of a JSONL line.
+type kindPeek struct {
+	Kind string `json:"kind"`
 }
 
 type blockDTO struct {
@@ -35,19 +55,19 @@ type blockDTO struct {
 	IsError    bool            `json:"is_error,omitempty"`
 }
 
-func toDTO(r Record) recordDTO {
-	msgs := make([]messageDTO, 0, len(r.Messages))
-	for _, m := range r.Messages {
-		blocks := make([]blockDTO, 0, len(m.Content))
-		for _, b := range m.Content {
-			blocks = append(blocks, blockToDTO(b))
-		}
-		msgs = append(msgs, messageDTO{Role: string(m.Role), Content: blocks})
+func headerFromRecord(r Record, enc string) headerDTO {
+	return headerDTO{
+		Kind: kindHeader, Version: formatVersion,
+		ID: r.ID, Created: r.Created, CWD: r.CWD, Model: r.Model, Enc: enc,
 	}
-	return recordDTO{
-		ID: r.ID, Created: r.Created, Updated: r.Updated,
-		CWD: r.CWD, Model: r.Model, Messages: msgs,
+}
+
+func msgToDTO(m apiclient.Message) messageDTO {
+	blocks := make([]blockDTO, 0, len(m.Content))
+	for _, b := range m.Content {
+		blocks = append(blocks, blockToDTO(b))
 	}
+	return messageDTO{Kind: kindMessage, Role: string(m.Role), Content: blocks}
 }
 
 func blockToDTO(b apiclient.ContentBlock) blockDTO {
@@ -63,25 +83,19 @@ func blockToDTO(b apiclient.ContentBlock) blockDTO {
 	}
 }
 
-func fromDTO(d recordDTO) Record {
-	msgs := make([]apiclient.Message, 0, len(d.Messages))
-	for _, m := range d.Messages {
-		blocks := make([]apiclient.ContentBlock, 0, len(m.Content))
-		for _, b := range m.Content {
-			if cb := blockFromDTO(b); cb != nil {
-				blocks = append(blocks, cb)
-			}
+func msgFromDTO(m messageDTO) apiclient.Message {
+	blocks := make([]apiclient.ContentBlock, 0, len(m.Content))
+	for _, b := range m.Content {
+		if cb := blockFromDTO(b); cb != nil {
+			blocks = append(blocks, cb)
 		}
-		msgs = append(msgs, apiclient.Message{Role: apiclient.Role(m.Role), Content: blocks})
 	}
-	return Record{
-		ID: d.ID, Created: d.Created, Updated: d.Updated,
-		CWD: d.CWD, Model: d.Model, Messages: msgs,
-	}
+	return apiclient.Message{Role: apiclient.Role(m.Role), Content: blocks}
 }
 
 // compactJSON returns raw with insignificant whitespace removed. If raw is empty
-// or invalid it is returned unchanged.
+// or invalid it is returned unchanged. Defensive: keeps tool-call input compact
+// so it round-trips byte-for-byte with what the model produced.
 func compactJSON(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
@@ -98,8 +112,6 @@ func blockFromDTO(b blockDTO) apiclient.ContentBlock {
 	case "text":
 		return apiclient.TextBlock{Text: b.Text}
 	case "tool_call":
-		// MarshalIndent re-indents embedded RawMessage; compact it back so the
-		// input round-trips byte-for-byte with what the model produced.
 		return apiclient.ToolCallBlock{ID: b.ID, Name: b.Name, Input: compactJSON(b.Input)}
 	case "tool_result":
 		return apiclient.ToolResultBlock{ToolCallID: b.ToolCallID, Content: b.Content, IsError: b.IsError}
