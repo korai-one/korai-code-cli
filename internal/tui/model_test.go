@@ -513,6 +513,27 @@ func TestPlanApprovalDialog(t *testing.T) {
 	}
 }
 
+// TestPlanDialogFitsScreen guards the regression where a tall plan dialog
+// overflowed the terminal and the renderer painted nothing.
+func TestPlanDialogFitsScreen(t *testing.T) {
+	t.Parallel()
+	m := New(fakeRunner{}, NewAsker(), "system", testCommands()).WithPlanApprover(NewPlanApprover())
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	longPlan := strings.Repeat("a step in the plan\n", 60)
+	pr := planRequest{plan: longPlan, reply: make(chan planReply, 1)}
+	tm, _ = m.Update(planRequestMsg{pr: pr})
+	m = tm.(Model)
+
+	if lines := strings.Count(m.View(), "\n") + 1; lines > 24 {
+		t.Errorf("plan dialog frame is %d lines, overflows the 24-row terminal", lines)
+	}
+	if !strings.Contains(m.View(), "Approve") {
+		t.Error("plan dialog options should be visible")
+	}
+}
+
 // TestPlanFeedbackFlow checks that "n" opens the feedback box and submitting it
 // rejects the plan, while the plan stays pending until then.
 func TestPlanFeedbackFlow(t *testing.T) {

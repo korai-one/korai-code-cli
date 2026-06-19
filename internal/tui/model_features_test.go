@@ -209,11 +209,16 @@ func TestViewportLeavesRoomForChrome(t *testing.T) {
 	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = tm.(Model)
 
-	if got, want := m.viewport.Height, 24-m.chromeLines(); got != want {
-		t.Errorf("viewport height = %d, want %d (24 - %d chrome)", got, want, m.chromeLines())
+	// relayout reserves the chrome plus one safety line.
+	if got, want := m.viewport.Height, 24-m.chromeLines()-1; got != want {
+		t.Errorf("viewport height = %d, want %d (24 - %d chrome - 1 safety)", got, want, m.chromeLines())
 	}
 	if m.viewport.Height >= 24 {
 		t.Errorf("viewport height %d leaves no room for chrome", m.viewport.Height)
+	}
+	// The full frame must fit within the terminal height.
+	if lines := strings.Count(m.View(), "\n") + 1; lines > 24 {
+		t.Errorf("frame is %d lines, overflows the 24-row terminal", lines)
 	}
 }
 

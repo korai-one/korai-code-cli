@@ -291,10 +291,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pending = &msg.pr
 		m.dialogChoice = 0
+		m.relayout() // the multi-line dialog needs room
+		m.refreshViewport()
 		return m, nil
 	case planRequestMsg:
 		m.pendingPlan = &msg.pr
 		m.planChoice = 0
+		m.relayout() // the plan dialog is tall; shrink the transcript
+		m.refreshViewport()
 		return m, nil
 	case filesLoadedMsg:
 		m.files = msg.paths
@@ -374,19 +378,17 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// chromeLines counts the lines rendered below the transcript (status line,
-// mode badge, the prompt/dialog, and any "\"-continued draft), so the viewport
-// can be sized to fill the rest of the screen without pushing the input off it.
+// chromeLines counts the lines rendered below the transcript (status line, mode
+// badge, suggestion menus, and the bottom area — prompt, spinner, or a
+// multi-line dialog), so the viewport can be sized to fill the rest of the
+// screen without pushing the bottom content off it.
 func (m Model) chromeLines() int {
-	n := 1 // the prompt / spinner / dialog line
+	n := m.bottomHeight()
 	if m.statusLine() != "" {
 		n++
 	}
 	if m.modeBadge() != "" {
 		n++
-	}
-	if m.draft != "" {
-		n += strings.Count(strings.TrimRight(m.draft, "\n"), "\n") + 1
 	}
 	if items, _ := m.menuWindow(); len(items) > 0 {
 		n += len(items)
@@ -397,6 +399,41 @@ func (m Model) chromeLines() int {
 	return n
 }
 
+// bottomHeight is the rendered line count of the bottom area for the current
+// state, mirroring the selection in View. Multi-line dialogs report their real
+// height so relayout can shrink the transcript to fit.
+func (m Model) bottomHeight() int {
+	switch {
+	case m.pendingPlan != nil && m.planFeedback:
+		return lineCount(m.renderPlanFeedback())
+	case m.pendingPlan != nil:
+		return lineCount(m.renderPlanDialog())
+	case m.pending != nil:
+		return lineCount(m.renderDialog())
+	case m.searching, m.busy:
+		return 1
+	default:
+		return lineCount(m.inputView())
+	}
+}
+
+// lineCount returns the number of lines in s (0 for empty).
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+// clampLines truncates s to at most max lines, appending a notice when cut.
+func clampLines(s string, max int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	return strings.Join(lines[:max], "\n") + "\n… (plan truncated for display; full plan saved on approval)"
+}
+
 // relayout resizes the transcript viewport to the screen height minus the chrome
 // below it. Call after anything that changes the chrome (resize, mode cycle,
 // draft growth).
@@ -404,7 +441,10 @@ func (m *Model) relayout() {
 	if !m.ready {
 		return
 	}
-	h := m.height - m.chromeLines()
+	// The extra -1 is a safety line: the joined frame must stay strictly within
+	// the terminal height, or Bubble Tea's renderer can fail to paint at all
+	// (which is what made tall dialogs show nothing).
+	h := m.height - m.chromeLines() - 1
 	if h < 1 {
 		h = 1
 	}
@@ -698,6 +738,7 @@ func (m Model) resolvePermission(decision perm.Decision, forSession bool) (tea.M
 	case decision == perm.DecisionAllow:
 		verb = "allowed"
 	}
+	m.relayout() // dialog gone; reclaim the space
 	m.addEntry(kindInfo, fmt.Sprintf("%s %s", verb, pr.req.ToolName))
 	return m, tea.Batch(replyPermission(pr, decision), waitForPermission(m.asker))
 }
@@ -732,6 +773,8 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.planFeedback = true
 			m.input.Reset()
 			m.input.Placeholder = "what to change (enter to send, esc to skip)…"
+			m.relayout() // feedback box height differs from the dialog
+			m.refreshViewport()
 			return m, nil
 		}
 	}
@@ -752,6 +795,8 @@ func (m Model) onPlanFeedbackKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		m.input.Placeholder = "Ask Korai…"
 		m.planFeedback = false
+		m.relayout() // back to the (taller) dialog
+		m.refreshViewport()
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -763,6 +808,7 @@ func (m Model) onPlanFeedbackKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) resolvePlan(decision plantool.Decision, feedback, note string) (tea.Model, tea.Cmd) {
 	pr := *m.pendingPlan
 	m.pendingPlan = nil
+	m.relayout() // dialog gone; reclaim the space
 	m.addEntry(kindInfo, note)
 	return m, tea.Batch(replyPlan(pr, decision, feedback), waitForPlan(m.planApprover))
 }
@@ -1277,11 +1323,29 @@ func (m Model) renderDialog() string {
 }
 
 // renderPlanDialog shows the proposed plan and the approval options as a
-// selectable list (↑/↓ to move, enter to confirm).
+// selectable list (↑/↓ to move, enter to confirm). The plan text is clamped to
+// the screen height so the dialog always fits; the full plan is in the model's
+// context and saved on approval.
 func (m Model) renderPlanDialog() string {
+	// Clamp the plan so the whole frame (transcript line + status + badge +
+	// dialog + safety) stays within the terminal height. Budget out everything
+	// that is not plan text: a viewport line, status, badge, a safety line, the
+	// dialog border (2), the two headings/blank lines (3), the options (3), the
+	// hint (1), and the truncation notice (1).
+	budget := m.height - 1 /*viewport min*/ - 1 /*safety*/
+	if m.statusLine() != "" {
+		budget--
+	}
+	if m.modeBadge() != "" {
+		budget--
+	}
+	maxPlan := budget - (2 + 3 + 3 + 1 + 1)
+	if maxPlan < 3 {
+		maxPlan = 3
+	}
 	var b strings.Builder
 	b.WriteString("Proposed plan:\n\n")
-	b.WriteString(strings.TrimSpace(m.pendingPlan.plan))
+	b.WriteString(clampLines(strings.TrimSpace(m.pendingPlan.plan), maxPlan))
 	b.WriteString("\n\n")
 	for i, opt := range planOptions {
 		if i == m.planChoice {
