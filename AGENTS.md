@@ -362,6 +362,7 @@ A unit (tool/service/screen) is done when **all** are true:
 
 - CLI: `github.com/spf13/cobra`
 - TUI: `github.com/charmbracelet/bubbletea`, `.../lipgloss`, `.../bubbles`,
+  `.../glamour` (markdown→ANSI rendering of assistant text),
   `github.com/76creates/stickers`; TUI tests `.../x/exp/teatest`
 - LLM: `github.com/anthropics/anthropic-sdk-go`
 - MCP: `github.com/modelcontextprotocol/go-sdk`

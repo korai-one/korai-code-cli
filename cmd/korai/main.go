@@ -229,7 +229,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}

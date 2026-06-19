@@ -38,6 +38,12 @@ const (
 type entry struct {
 	kind entryKind
 	text string
+
+	// rendered caches the markdown-rendered form of an assistant entry at
+	// renderedWidth, so glamour runs once per entry per width rather than on
+	// every streamed token. Empty until the entry is finalized.
+	rendered      string
+	renderedWidth int
 }
 
 // Model is the Bubble Tea model for the REPL.
@@ -55,6 +61,7 @@ type Model struct {
 	spinner  spinner.Model
 	viewport viewport.Model
 	styles   styles
+	md       *markdownRenderer
 
 	compactor    Compactor
 	modes        *perm.ModeSelector
@@ -169,6 +176,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onResize(msg)
 	case tea.KeyMsg:
 		return m.onKey(msg)
+	case tea.MouseMsg:
+		// Mouse-wheel scrolling of the transcript; the viewport ignores other
+		// mouse actions.
+		if m.ready {
+			m.viewport, _ = m.viewport.Update(msg)
+		}
+		return m, nil
 	case spinner.TickMsg:
 		if m.busy {
 			var cmd tea.Cmd
@@ -250,6 +264,11 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = msg.Width
 		m.viewport.Height = vpHeight
 	}
+	// Rebuild the markdown renderer to wrap at the new width. Cached per-entry
+	// renders at the old width are invalidated lazily via renderedWidth.
+	if m.md == nil || m.md.width != msg.Width {
+		m.md = newMarkdownRenderer(msg.Width)
+	}
 	m.refreshViewport()
 	return m, nil
 }
@@ -261,6 +280,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.quitting = true
 		return m, tea.Quit
+	}
+
+	// Transcript scrolling works in any state (including while the agent is
+	// busy or a dialog is open) so the user can read back through output.
+	if m.ready && m.handleScroll(msg) {
+		return m, nil
 	}
 
 	// Permission and plan-approval dialogs take priority over all other input.
@@ -292,6 +317,33 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// handleScroll moves the transcript viewport for the recognized scroll keys and
+// reports whether it consumed the key. Other keys are left for the input field
+// and dialogs. It takes a pointer so the viewport's scroll position sticks.
+func (m *Model) handleScroll(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "pgup":
+		m.viewport.ViewUp()
+	case "pgdown":
+		m.viewport.ViewDown()
+	case "ctrl+u":
+		m.viewport.HalfViewUp()
+	case "ctrl+d":
+		m.viewport.HalfViewDown()
+	case "shift+up":
+		m.viewport.LineUp(1)
+	case "shift+down":
+		m.viewport.LineDown(1)
+	case "home":
+		m.viewport.GotoTop()
+	case "end":
+		m.viewport.GotoBottom()
+	default:
+		return false
+	}
+	return true
 }
 
 func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -466,14 +518,10 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		}
 	case engine.ToolStartEvent:
 		m.streaming = false
-		m.addEntry(kindTool, fmt.Sprintf("%s %s", ev.Name, strings.TrimSpace(string(ev.Input))))
+		m.addEntry(kindTool, toolHeader(ev.Name, ev.Input))
 	case engine.ToolResultEvent:
 		m.streaming = false
-		if ev.Result.IsError {
-			m.addEntry(kindToolResult, "error: "+oneLine(ev.Result.Content))
-		} else {
-			m.addEntry(kindToolResult, oneLine(ev.Result.Content))
-		}
+		m.addEntry(kindToolResult, toolSummary(ev.Name, ev.Result))
 	case engine.CompactedEvent:
 		m.addEntry(kindInfo, fmt.Sprintf("auto-compacted context: %d → %d messages", ev.Before, ev.After))
 	case engine.DoneEvent:
@@ -507,10 +555,15 @@ func (m *Model) refreshViewport() {
 	m.viewport.GotoBottom()
 }
 
-func (m Model) renderEntries() string {
+// renderEntries assembles the full transcript. Assistant text is rendered as
+// markdown (cached per entry/width); the entry currently being streamed is shown
+// as raw text, since partial markdown is noisy and re-rendering every token is
+// wasteful. Tool calls show a "●" bullet, their results a "⎿" connector.
+func (m *Model) renderEntries() string {
 	w := m.viewport.Width
 	var b strings.Builder
-	for i, e := range m.entries {
+	for i := range m.entries {
+		e := &m.entries[i]
 		if i > 0 {
 			b.WriteByte('\n')
 		}
@@ -518,11 +571,11 @@ func (m Model) renderEntries() string {
 		case kindUser:
 			b.WriteString(m.styles.user.Width(w).Render("› " + e.text))
 		case kindAssistant:
-			b.WriteString(m.styles.assistant.Width(w).Render(e.text))
+			b.WriteString(m.assistantText(i, w))
 		case kindTool:
-			b.WriteString(m.styles.tool.Width(w).Render("⚙ " + e.text))
+			b.WriteString(m.styles.tool.Width(w).Render("● " + e.text))
 		case kindToolResult:
-			b.WriteString(m.styles.toolResult.Width(w).Render("  ↳ " + e.text))
+			b.WriteString(m.styles.toolResult.Width(w).Render("  ⎿ " + e.text))
 		case kindError:
 			b.WriteString(m.styles.errorText.Width(w).Render("✗ " + e.text))
 		case kindInfo:
@@ -530,6 +583,24 @@ func (m Model) renderEntries() string {
 		}
 	}
 	return b.String()
+}
+
+// assistantText returns the display form of assistant entry i. The actively
+// streaming entry (the last one while m.streaming) is shown raw; finalized
+// entries are markdown-rendered and cached at width w.
+func (m *Model) assistantText(i, w int) string {
+	e := &m.entries[i]
+	if m.streaming && i == len(m.entries)-1 {
+		return m.styles.assistant.Width(w).Render(e.text)
+	}
+	if m.md != nil && (e.rendered == "" || e.renderedWidth != w) {
+		e.rendered = m.md.render(e.text)
+		e.renderedWidth = w
+	}
+	if e.rendered != "" {
+		return e.rendered
+	}
+	return m.styles.assistant.Width(w).Render(e.text)
 }
 
 // View renders the current frame.
