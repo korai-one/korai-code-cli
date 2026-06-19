@@ -36,6 +36,11 @@ type planRequestMsg struct {
 	pr planRequest
 }
 
+// filesLoadedMsg delivers the lazily-walked workspace file list for @-mentions.
+type filesLoadedMsg struct {
+	paths []string
+}
+
 // resumeLoadedMsg carries the result of loading a saved session.
 type resumeLoadedMsg struct {
 	id       string

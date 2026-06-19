@@ -41,14 +41,10 @@ func commandMenu(all []command.Command, input string) []command.Command {
 	return out
 }
 
-// menuWindow returns the slice of suggestions currently visible and the index of
-// the selected item within that slice, scrolling a fixed-height window that
-// keeps the selection centered. It returns (nil, -1) when the menu is empty.
-func (m Model) menuWindow() ([]command.Command, int) {
-	n := len(m.menu)
-	if n == 0 {
-		return nil, -1
-	}
+// windowBounds returns the [start, start+count) slice of a list of n items that
+// should be visible given the selection sel, scrolling a fixed-height window
+// (maxMenuRows, shrunk for short terminals) that keeps the selection centered.
+func (m Model) windowBounds(n, sel int) (start, count int) {
 	rows := maxMenuRows
 	// Leave room for the transcript on short terminals.
 	if lim := m.height - 3; lim < rows {
@@ -58,14 +54,25 @@ func (m Model) menuWindow() ([]command.Command, int) {
 		rows = 1
 	}
 	if n <= rows {
-		return m.menu, m.menuIdx
+		return 0, n
 	}
-	start := m.menuIdx - rows/2
+	start = sel - rows/2
 	if start < 0 {
 		start = 0
 	}
 	if start > n-rows {
 		start = n - rows
 	}
-	return m.menu[start : start+rows], m.menuIdx - start
+	return start, rows
+}
+
+// menuWindow returns the slice of suggestions currently visible and the index of
+// the selected item within that slice. It returns (nil, -1) when empty.
+func (m Model) menuWindow() ([]command.Command, int) {
+	n := len(m.menu)
+	if n == 0 {
+		return nil, -1
+	}
+	start, count := m.windowBounds(n, m.menuIdx)
+	return m.menu[start : start+count], m.menuIdx - start
 }

@@ -79,6 +79,18 @@ type Model struct {
 	menuIdx     int               // selected suggestion
 	menuHideFor string            // input value the menu was dismissed for (esc)
 
+	atItems      []string // live @-mention file suggestions
+	atIdx        int      // selected file suggestion
+	atHideFor    string   // input value the @-menu was dismissed for (esc)
+	files        []string // workspace file candidates, loaded lazily
+	filesLoaded  bool
+	filesLoading bool
+	// fileFinder lists workspace-relative paths for @-mentions; mentionExpander
+	// inlines the content of @-referenced files into the submitted prompt. Both
+	// are injected so the model does no filesystem I/O itself.
+	fileFinder      func() []string
+	mentionExpander func(string) string
+
 	search    transcriptSearch // transcript find state (ctrl+f)
 	searching bool             // the input is acting as a search box
 
@@ -150,6 +162,21 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 // Call before tea.NewProgram.
 func (m Model) WithVersion(v string) Model {
 	m.version = v
+	return m
+}
+
+// WithFileFinder wires the workspace file lister used by @-mention completion.
+// finder returns workspace-relative, slash-separated paths. Call before
+// tea.NewProgram.
+func (m Model) WithFileFinder(finder func() []string) Model {
+	m.fileFinder = finder
+	return m
+}
+
+// WithMentionExpander wires the function that inlines @-referenced file contents
+// into a submitted prompt. Call before tea.NewProgram.
+func (m Model) WithMentionExpander(expand func(string) string) Model {
+	m.mentionExpander = expand
 	return m
 }
 
@@ -263,6 +290,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planRequestMsg:
 		m.pendingPlan = &msg.pr
 		return m, nil
+	case filesLoadedMsg:
+		m.files = msg.paths
+		m.filesLoaded = true
+		m.filesLoading = false
+		m.updateAt() // populate suggestions now that the list is in
+		return m, nil
 	case engineEventMsg:
 		return m.onEngineEvent(msg)
 	case compactDoneMsg:
@@ -352,6 +385,9 @@ func (m Model) chromeLines() int {
 	if items, _ := m.menuWindow(); len(items) > 0 {
 		n += len(items)
 	}
+	if items, _ := m.atWindow(); len(items) > 0 {
+		n += len(items)
+	}
 	return n
 }
 
@@ -421,6 +457,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return model, cmd
 		}
 	}
+	// The @-mention file picker, when open, owns the same keys.
+	if len(m.atItems) > 0 {
+		if handled, model, cmd := m.onAtKey(msg); handled {
+			return model, cmd
+		}
+	}
 
 	switch msg.String() {
 	case "ctrl+f":
@@ -446,7 +488,8 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.updateMenu()
-	return m, cmd
+	atCmd := m.updateAt()
+	return m, tea.Batch(cmd, atCmd)
 }
 
 // onMenuKey handles keys while the slash-command menu is open: ↑/↓ (and
@@ -670,6 +713,8 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.input.Reset()
 	m.menu = nil
 	m.menuIdx = 0
+	m.atItems = nil
+	m.atIdx = 0
 	if hadDraft {
 		m.relayout()
 	}
@@ -770,14 +815,20 @@ func (m Model) startCompaction() (tea.Model, tea.Cmd) {
 	)
 }
 
-// startTurn records the prompt and launches an engine turn.
+// startTurn records the prompt and launches an engine turn. The transcript
+// shows what the user typed; the message sent to the model has any @-referenced
+// files inlined by mentionExpander.
 func (m Model) startTurn(promptText string) (tea.Model, tea.Cmd) {
 	if !strings.HasPrefix(strings.TrimSpace(promptText), "/") {
 		m.addEntry(kindUser, promptText)
 	}
+	sendText := promptText
+	if m.mentionExpander != nil {
+		sendText = m.mentionExpander(promptText)
+	}
 	m.history = append(m.history, apiclient.Message{
 		Role:    apiclient.RoleUser,
-		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: promptText}},
+		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: sendText}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1000,6 +1051,9 @@ func (m Model) View() string {
 	}
 	if menu := m.menuView(); menu != "" {
 		lines = append(lines, menu)
+	}
+	if at := m.atMenuView(); at != "" {
+		lines = append(lines, at)
 	}
 	lines = append(lines, bottom)
 	return strings.Join(lines, "\n")

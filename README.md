@@ -37,7 +37,8 @@ The inference backend sits behind a strict **strangler-fig boundary** (`internal
 - **Plan mode** — read-only investigation that ends with an `ExitPlanMode` proposal you approve before any edits run.
 - **Sessions & resume** — conversations auto-save to `~/.korai/sessions/<id>.jsonl` (per-message JSONL append, `0600`). Resume the latest with `--continue`/`-c`, a specific one with `--resume <id>`, or browse live with `/resume`. A `Codec` seam is in place for at-rest encryption.
 - **Auto-compaction** — long conversations are summarized before they overflow the context window; trigger manually with `/compact`.
-- **Slash commands** — `/help`, `/clear`, `/quit`, `/tools`, `/about`, `/model`, `/cost`, `/compact`, `/plan`, `/resume`.
+- **Slash commands** — `/help`, `/clear`, `/quit`, `/tools`, `/about`, `/model`, `/cost`, `/compact`, `/plan`, `/resume`. Type `/` for a fuzzy command menu.
+- **@-file mentions** — type `@` to fuzzy-pick a workspace file; the referenced file's content is inlined into the prompt sent to the model.
 - **Skills** — markdown files become slash commands. Bundled `/commit` and `/review`; drop `.korai/skills/*.md` to add your own (project and user skills override bundled ones by name).
 - **MCP** — connect external MCP servers from config; their tools register alongside the built-ins.
 - **Hooks** — run shell commands at `SessionStart`, `PreToolUse` (can veto a call), and `PostToolUse`.

@@ -49,6 +49,9 @@ type assembled struct {
 	deps      tool.Deps
 	closers   []func() error
 
+	fileFinder      func() []string
+	mentionExpander func(string) string
+
 	sessionID      string
 	sessionStart   time.Time
 	initialHistory []apiclient.Message
@@ -181,6 +184,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		system:    system,
 		deps:      deps,
 		closers:   closers,
+
+		fileFinder:      workspaceFiles(wd),
+		mentionExpander: mentionExpander(wd),
 
 		sessionID:      sessionID,
 		sessionStart:   sessionStart,
