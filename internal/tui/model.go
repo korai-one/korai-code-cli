@@ -73,6 +73,10 @@ type Model struct {
 	inputHist inputHistory // ↑/↓ recall of submitted prompts
 	draft     string       // accumulated lines from "\"-continued input
 
+	menu        []command.Command // live slash-command suggestions ("/" menu)
+	menuIdx     int               // selected suggestion
+	menuHideFor string            // input value the menu was dismissed for (esc)
+
 	search    transcriptSearch // transcript find state (ctrl+f)
 	searching bool             // the input is acting as a search box
 
@@ -333,6 +337,9 @@ func (m Model) chromeLines() int {
 	if m.draft != "" {
 		n += strings.Count(strings.TrimRight(m.draft, "\n"), "\n") + 1
 	}
+	if items, _ := m.menuWindow(); len(items) > 0 {
+		n += len(items)
+	}
 	return n
 }
 
@@ -396,6 +403,13 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The slash-command menu, when open, owns navigation/accept keys.
+	if len(m.menu) > 0 {
+		if handled, model, cmd := m.onMenuKey(msg); handled {
+			return model, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+f":
 		return m.enterSearch()
@@ -419,7 +433,75 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.updateMenu()
 	return m, cmd
+}
+
+// onMenuKey handles keys while the slash-command menu is open: ↑/↓ (and
+// ctrl+p/n) cycle the selection with wrap-around, tab completes the name and
+// leaves the cursor ready for arguments, enter accepts and runs it, esc
+// dismisses the menu. It reports whether it consumed the key.
+func (m Model) onMenuKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+	n := len(m.menu)
+	switch msg.String() {
+	case "up", "ctrl+p":
+		m.menuIdx = (m.menuIdx - 1 + n) % n
+		return true, m, nil
+	case "down", "ctrl+n":
+		m.menuIdx = (m.menuIdx + 1) % n
+		return true, m, nil
+	case "tab":
+		m.completeMenu()
+		return true, m, nil
+	case "enter":
+		model, cmd := m.acceptMenu()
+		return true, model, cmd
+	case "esc":
+		m.menuHideFor = m.input.Value()
+		m.menu = nil
+		m.relayout()
+		return true, m, nil
+	}
+	return false, m, nil
+}
+
+// updateMenu recomputes the slash-command suggestions from the current input,
+// clamps the selection, and relays out the chrome if the row count changed. The
+// menu stays hidden while the input matches the value it was dismissed at.
+func (m *Model) updateMenu() {
+	if m.commands == nil {
+		m.menu = nil
+		return
+	}
+	prev := len(m.menu)
+	if v := m.input.Value(); v == m.menuHideFor {
+		m.menu = nil
+	} else {
+		m.menu = commandMenu(m.commands.All(), v)
+		m.menuHideFor = ""
+	}
+	if m.menuIdx >= len(m.menu) {
+		m.menuIdx = 0
+	}
+	if len(m.menu) != prev {
+		m.relayout()
+	}
+}
+
+// completeMenu fills the input with the selected command name and a trailing
+// space, ready for arguments; the menu closes (the space ends name-typing).
+func (m *Model) completeMenu() {
+	m.input.SetValue("/" + m.menu[m.menuIdx].Name() + " ")
+	m.input.CursorEnd()
+	m.menu = nil
+	m.relayout()
+}
+
+// acceptMenu fills in the selected command and submits it immediately.
+func (m Model) acceptMenu() (tea.Model, tea.Cmd) {
+	m.input.SetValue("/" + m.menu[m.menuIdx].Name())
+	m.menu = nil
+	return m.submit()
 }
 
 // handleScroll moves the transcript viewport for the recognized scroll keys and
@@ -574,6 +656,8 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	hadDraft := m.draft != ""
 	m.draft = ""
 	m.input.Reset()
+	m.menu = nil
+	m.menuIdx = 0
 	if hadDraft {
 		m.relayout()
 	}
@@ -899,15 +983,42 @@ func (m Model) View() string {
 	if badge := m.modeBadge(); badge != "" {
 		lines = append(lines, badge)
 	}
+	if menu := m.menuView(); menu != "" {
+		lines = append(lines, menu)
+	}
 	lines = append(lines, bottom)
 	return strings.Join(lines, "\n")
+}
+
+// menuView renders the slash-command suggestion list, the selected row
+// highlighted. Empty when the menu is closed.
+func (m Model) menuView() string {
+	items, sel := m.menuWindow()
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, c := range items {
+		row := fmt.Sprintf("/%-12s %s", c.Name(), c.Description())
+		if i == sel {
+			b.WriteString(m.styles.menuSel.Render("› " + row))
+		} else {
+			b.WriteString(m.styles.menuItem.Render("  " + row))
+		}
+		if i < len(items)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // inputView renders the prompt, any "\"-continued draft lines above it, and a
 // dim argument hint when the user is typing a known slash command.
 func (m Model) inputView() string {
 	v := m.input.View()
-	if hint := m.argHint(); hint != "" {
+	// The argument hint only shows once the command name is complete; while the
+	// name is still being typed the dropdown menu covers that.
+	if hint := m.argHint(); hint != "" && len(m.menu) == 0 {
 		v += "  " + hint
 	}
 	if m.draft != "" {

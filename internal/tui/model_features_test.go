@@ -211,6 +211,98 @@ func TestViewportLeavesRoomForChrome(t *testing.T) {
 	}
 }
 
+// TestMenuOpensOnSlash shows the command menu the moment "/" is typed.
+func TestMenuOpensOnSlash(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	tm, _ := m.Update(keyRunes("/"))
+	m = tm.(Model)
+	if len(m.menu) == 0 {
+		t.Fatal(`typing "/" should open the command menu`)
+	}
+	if len(m.menu) != len(testCommands().All()) {
+		t.Errorf("menu has %d items, want all %d commands", len(m.menu), len(testCommands().All()))
+	}
+}
+
+// TestMenuNavigationWraps cycles the selection with wrap-around.
+func TestMenuNavigationWraps(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	tm, _ := m.Update(keyRunes("/"))
+	m = tm.(Model)
+	n := len(m.menu)
+
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp}) // wrap to last
+	m = tm.(Model)
+	if m.menuIdx != n-1 {
+		t.Errorf("up from 0 = %d, want %d (wrap to last)", m.menuIdx, n-1)
+	}
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // wrap to first
+	m = tm.(Model)
+	if m.menuIdx != 0 {
+		t.Errorf("down from last = %d, want 0 (wrap to first)", m.menuIdx)
+	}
+}
+
+// TestMenuTabCompletes fills the name and leaves the menu closed for arguments.
+func TestMenuTabCompletes(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	tm, _ := m.Update(keyRunes("/"))
+	m = tm.(Model)
+	tm, _ = m.Update(keyRunes("c")) // narrow to c* commands
+	m = tm.(Model)
+	want := "/" + m.menu[m.menuIdx].Name() + " "
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = tm.(Model)
+	if m.input.Value() != want {
+		t.Errorf("after tab input = %q, want %q", m.input.Value(), want)
+	}
+	if len(m.menu) != 0 {
+		t.Error("menu should close after tab-completion")
+	}
+}
+
+// TestMenuEnterRunsCommand accepts the selection and executes it.
+func TestMenuEnterRunsCommand(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	// Seed an entry so we can observe /clear wiping the transcript.
+	m.addEntry(kindAssistant, "something")
+	for _, r := range "/clear" {
+		tm, _ := m.Update(keyRunes(string(r)))
+		m = tm.(Model)
+	}
+	if len(m.menu) == 0 {
+		t.Fatal("menu should be open on /clear")
+	}
+	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+	if len(m.entries) != 0 {
+		t.Errorf("/clear via menu should empty the transcript, got %d entries", len(m.entries))
+	}
+}
+
+// TestMenuEscDismisses hides the menu until the input changes.
+func TestMenuEscDismisses(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	tm, _ := m.Update(keyRunes("/"))
+	m = tm.(Model)
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = tm.(Model)
+	if len(m.menu) != 0 {
+		t.Error("esc should dismiss the menu")
+	}
+	// Typing more re-opens it.
+	tm, _ = m.Update(keyRunes("h"))
+	m = tm.(Model)
+	if len(m.menu) == 0 {
+		t.Error("menu should reopen once the input changes after dismiss")
+	}
+}
+
 // TestSearchMatchesEntries runs an incremental search over the transcript.
 func TestSearchMatchesEntries(t *testing.T) {
 	t.Parallel()
