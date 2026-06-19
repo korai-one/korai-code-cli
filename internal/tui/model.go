@@ -874,8 +874,10 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case command.SubmitPrompt:
+		// Echo the command invocation the user typed, then run the prompt the
+		// command produced (runTurn avoids a duplicate transcript entry).
 		m.addEntry(kindUser, raw)
-		return m.startTurn(res.Text)
+		return m.runTurn(res.Text)
 	case command.CompactHistory:
 		return m.startCompaction()
 	case command.ResumeSession:
@@ -933,13 +935,19 @@ func (m Model) startCompaction() (tea.Model, tea.Cmd) {
 	)
 }
 
-// startTurn records the prompt and launches an engine turn. The transcript
-// shows what the user typed; the message sent to the model has any @-referenced
-// files inlined by mentionExpander.
+// startTurn echoes the prompt in the transcript and launches an engine turn.
+// Use it for prompts the user typed directly; commands that already echoed the
+// invocation call runTurn instead to avoid a duplicate entry.
 func (m Model) startTurn(promptText string) (tea.Model, tea.Cmd) {
-	if !strings.HasPrefix(strings.TrimSpace(promptText), "/") {
-		m.addEntry(kindUser, promptText)
-	}
+	m.addEntry(kindUser, promptText)
+	return m.runTurn(promptText)
+}
+
+// runTurn launches an engine turn for promptText without echoing it (the caller
+// is responsible for showing what the user did). The transcript shows the typed
+// text; the message sent to the model has any @-referenced files inlined by
+// mentionExpander.
+func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
 	sendText := promptText
 	if m.mentionExpander != nil {
 		sendText = m.mentionExpander(promptText)

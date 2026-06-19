@@ -290,7 +290,10 @@ func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.M
 	reg.Register(command.NewModelCommand(availableModels, models))
 	reg.Register(command.NewCostCommand(costTracker.Summary))
 	reg.Register(command.NewCompactCommand())
-	reg.Register(command.NewPlanCommand(func() string { return togglePlan(modes) }))
+	reg.Register(command.NewPlanCommand(
+		func() string { return togglePlan(modes) },
+		func() { modes.Set(perm.ModePlan) },
+	))
 	reg.Register(command.NewResumeCommand(func() string { return formatSessions(sessStore, wd) }))
 
 	// Bundled skills first, then discovered skills (which override by name).

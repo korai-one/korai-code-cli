@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
@@ -236,6 +237,49 @@ func TestWelcomeShownWhenEmpty(t *testing.T) {
 	m.addEntry(kindUser, "hello")
 	if got := m.renderEntries(); strings.Contains(got, "Korai Code CLI") {
 		t.Error("welcome banner should disappear once the transcript has content")
+	}
+}
+
+// TestPlanCommandWithTask enters plan mode and runs the task in one step,
+// echoing the invocation exactly once.
+func TestPlanCommandWithTask(t *testing.T) {
+	t.Parallel()
+	modes := perm.NewModeSelector(perm.ModeDefault)
+	reg := command.NewRegistry()
+	reg.Register(command.NewPlanCommand(
+		func() string { return modes.Get().String() },
+		func() { modes.Set(perm.ModePlan) },
+	))
+	m := New(fakeRunner{}, NewAsker(), "system", reg).WithModes(modes)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = tm.(Model)
+
+	m.input.SetValue("/plan add a cache layer")
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = tm.(Model)
+
+	if modes.Get() != perm.ModePlan {
+		t.Errorf("mode = %v, want plan", modes.Get())
+	}
+	if !m.busy {
+		t.Error("/plan <task> should start a turn")
+	}
+	users := 0
+	for _, e := range m.entries {
+		if e.kind == kindUser {
+			users++
+			if e.text != "/plan add a cache layer" {
+				t.Errorf("user entry = %q, want the invocation", e.text)
+			}
+		}
+	}
+	if users != 1 {
+		t.Errorf("got %d user entries, want exactly 1 (no double echo)", users)
+	}
+	// The model receives the task text, not the slash command.
+	last := m.history[len(m.history)-1]
+	if tb, ok := last.Content[0].(apiclient.TextBlock); !ok || tb.Text != "add a cache layer" {
+		t.Errorf("sent message = %+v, want the task text", last.Content[0])
 	}
 }
 

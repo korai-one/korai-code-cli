@@ -85,13 +85,18 @@ func (c *aboutCommand) Run(string) (Result, error) {
 	return Result{Action: ShowText, Text: c.text}, nil
 }
 
-// planCommand toggles plan mode (read-only research) on or off.
-type planCommand struct{ toggle func() string }
+// planCommand toggles plan mode, or with an argument enters plan mode and plans
+// the given task immediately.
+type planCommand struct {
+	toggle    func() string
+	enterPlan func()
+}
 
 // NewPlanCommand returns a /plan command. toggle switches plan mode on/off and
-// returns the resulting mode name, which the command reports to the user.
-func NewPlanCommand(toggle func() string) Command {
-	return &planCommand{toggle: toggle}
+// returns the resulting mode name; enterPlan unconditionally enters plan mode,
+// used when a task is supplied so it is planned right away.
+func NewPlanCommand(toggle func() string, enterPlan func()) Command {
+	return &planCommand{toggle: toggle, enterPlan: enterPlan}
 }
 
 // Name returns "plan".
@@ -99,10 +104,15 @@ func (*planCommand) Name() string { return "plan" }
 
 // Description returns the command summary.
 func (*planCommand) Description() string {
-	return "toggle plan mode (read-only; agent proposes before acting)"
+	return "/plan <task> to plan a task, or /plan alone to toggle plan mode"
 }
 
-// Run toggles plan mode and reports the new mode.
-func (c *planCommand) Run(string) (Result, error) {
+// Run enters plan mode and submits the task when one is given; otherwise it
+// toggles plan mode and reports the new mode.
+func (c *planCommand) Run(args string) (Result, error) {
+	if task := strings.TrimSpace(args); task != "" {
+		c.enterPlan()
+		return Result{Action: SubmitPrompt, Text: task}, nil
+	}
 	return Result{Action: ShowText, Text: "permission mode: " + c.toggle()}, nil
 }

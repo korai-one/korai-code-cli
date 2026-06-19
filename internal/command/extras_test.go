@@ -63,11 +63,13 @@ func TestPlanCommand(t *testing.T) {
 		}
 		return state
 	}
-	cmd := command.NewPlanCommand(toggle)
+	entered := false
+	cmd := command.NewPlanCommand(toggle, func() { entered = true; state = "plan" })
 	if cmd.Name() != "plan" {
 		t.Errorf("name = %q, want plan", cmd.Name())
 	}
 
+	// No argument toggles plan mode.
 	res, _ := cmd.Run("")
 	if res.Action != command.ShowText || !strings.Contains(res.Text, "plan") {
 		t.Errorf("first toggle = %+v, want plan", res)
@@ -75,6 +77,15 @@ func TestPlanCommand(t *testing.T) {
 	res, _ = cmd.Run("")
 	if !strings.Contains(res.Text, "default") {
 		t.Errorf("second toggle = %+v, want default", res)
+	}
+
+	// With a task it enters plan mode and submits the task.
+	res, _ = cmd.Run("add a cache layer")
+	if !entered {
+		t.Error("/plan <task> should enter plan mode")
+	}
+	if res.Action != command.SubmitPrompt || res.Text != "add a cache layer" {
+		t.Errorf("/plan <task> = %+v, want SubmitPrompt with the task", res)
 	}
 }
 
