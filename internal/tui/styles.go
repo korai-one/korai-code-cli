@@ -11,6 +11,7 @@ type styles struct {
 	toolResult lipgloss.Style
 	errorText  lipgloss.Style
 	info       lipgloss.Style
+	status     lipgloss.Style
 	dialog     lipgloss.Style
 }
 
@@ -22,6 +23,7 @@ func newStyles() styles {
 		toolResult: lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true),
 		errorText:  lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 		info:       lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
+		status:     lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true),
 		dialog: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("11")).

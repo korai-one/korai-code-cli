@@ -8,6 +8,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 )
@@ -30,6 +32,7 @@ const (
 	kindAssistant
 	kindTool
 	kindToolResult
+	kindDiff // pre-styled diff block shown under an Edit's result
 	kindError
 	kindInfo
 )
@@ -44,6 +47,10 @@ type entry struct {
 	// every streamed token. Empty until the entry is finalized.
 	rendered      string
 	renderedWidth int
+
+	// diffOld/diffNew hold the before/after text of a kindDiff entry, rendered
+	// to a +/- block at the current width (so it reflows on resize).
+	diffOld, diffNew string
 }
 
 // Model is the Bubble Tea model for the REPL.
@@ -63,9 +70,25 @@ type Model struct {
 	styles   styles
 	md       *markdownRenderer
 
+	inputHist inputHistory // ↑/↓ recall of submitted prompts
+	draft     string       // accumulated lines from "\"-continued input
+
+	search    transcriptSearch // transcript find state (ctrl+f)
+	searching bool             // the input is acting as a search box
+
 	compactor    Compactor
 	modes        *perm.ModeSelector
+	models       *apiclient.ModelSelector
+	cost         *cost.Tracker
 	planApprover *PlanApprover
+
+	// sessionAllowed records tool names the user chose to allow for the rest of
+	// the session ("[a]lways" in the permission dialog), so repeat calls skip the
+	// prompt. It never persists and never widens the engine's own rules.
+	sessionAllowed map[string]bool
+	// pendingEdit holds the old/new text of an in-flight Edit, captured at
+	// ToolStart and rendered as a diff when its result arrives.
+	pendingEdit *editChange
 
 	saver        Saver
 	resumeLoader ResumeLoader
@@ -80,6 +103,15 @@ type Model struct {
 	width, height int
 	ready         bool
 	quitting      bool
+
+	// entryOffsets[i] is the line at which entry i begins in the rendered
+	// transcript, recomputed on each refresh and used to scroll to search hits.
+	entryOffsets []int
+}
+
+// editChange is the before/after text of an Edit tool call, used to render a diff.
+type editChange struct {
+	old, new string
 }
 
 // New builds a REPL model bound to a Runner, the interactive Asker, the system
@@ -94,14 +126,29 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 	sp.Spinner = spinner.Dot
 
 	return Model{
-		runner:   runner,
-		asker:    asker,
-		system:   system,
-		commands: commands,
-		input:    ti,
-		spinner:  sp,
-		styles:   newStyles(),
+		runner:         runner,
+		asker:          asker,
+		system:         system,
+		commands:       commands,
+		input:          ti,
+		spinner:        sp,
+		styles:         newStyles(),
+		sessionAllowed: make(map[string]bool),
 	}
+}
+
+// WithModels wires the active-model selector so the status line can show the
+// current model. Call before tea.NewProgram.
+func (m Model) WithModels(s *apiclient.ModelSelector) Model {
+	m.models = s
+	return m
+}
+
+// WithCost wires the token/cost tracker so the status line can show usage. Call
+// before tea.NewProgram.
+func (m Model) WithCost(t *cost.Tracker) Model {
+	m.cost = t
+	return m
 }
 
 // Compactor summarizes the conversation history, returning a shorter history.
@@ -191,6 +238,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case permRequestMsg:
+		// Tools the user chose to allow for the session skip the prompt.
+		if m.sessionAllowed[msg.pr.req.ToolName] {
+			return m, tea.Batch(replyPermission(msg.pr, perm.DecisionAllow), waitForPermission(m.asker))
+		}
 		m.pending = &msg.pr
 		return m, nil
 	case planRequestMsg:
@@ -252,25 +303,51 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.height = msg.Height
 	m.input.Width = msg.Width - 4
 
-	// Reserve two lines below the transcript: a status line and the input.
-	vpHeight := msg.Height - 2
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
 	if !m.ready {
-		m.viewport = viewport.New(msg.Width, vpHeight)
+		m.viewport = viewport.New(msg.Width, 1)
 		m.ready = true
 	} else {
 		m.viewport.Width = msg.Width
-		m.viewport.Height = vpHeight
 	}
 	// Rebuild the markdown renderer to wrap at the new width. Cached per-entry
 	// renders at the old width are invalidated lazily via renderedWidth.
 	if m.md == nil || m.md.width != msg.Width {
 		m.md = newMarkdownRenderer(msg.Width)
 	}
+	m.relayout()
 	m.refreshViewport()
 	return m, nil
+}
+
+// chromeLines counts the lines rendered below the transcript (status line,
+// mode badge, the prompt/dialog, and any "\"-continued draft), so the viewport
+// can be sized to fill the rest of the screen without pushing the input off it.
+func (m Model) chromeLines() int {
+	n := 1 // the prompt / spinner / dialog line
+	if m.statusLine() != "" {
+		n++
+	}
+	if m.modeBadge() != "" {
+		n++
+	}
+	if m.draft != "" {
+		n += strings.Count(strings.TrimRight(m.draft, "\n"), "\n") + 1
+	}
+	return n
+}
+
+// relayout resizes the transcript viewport to the screen height minus the chrome
+// below it. Call after anything that changes the chrome (resize, mode cycle,
+// draft growth).
+func (m *Model) relayout() {
+	if !m.ready {
+		return
+	}
+	h := m.height - m.chromeLines()
+	if h < 1 {
+		h = 1
+	}
+	m.viewport.Height = h
 }
 
 func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -283,12 +360,14 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Transcript scrolling works in any state (including while the agent is
-	// busy or a dialog is open) so the user can read back through output.
+	// busy or a dialog is open) so the user can read back through output. These
+	// bindings avoid the single-line editing keys (home/end, ctrl+u, word moves).
 	if m.ready && m.handleScroll(msg) {
 		return m, nil
 	}
 
-	// Permission and plan-approval dialogs take priority over all other input.
+	// Permission and plan-approval dialogs take priority over all other input,
+	// matching View's render priority.
 	if m.pending != nil {
 		return m.onDialogKey(msg)
 	}
@@ -296,9 +375,16 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onPlanKey(msg)
 	}
 
+	// Search mode turns the input into a find box until esc.
+	if m.searching {
+		return m.onSearchKey(msg)
+	}
+
 	// Shift+Tab cycles the permission mode (default → acceptEdits → plan).
 	if msg.Type == tea.KeyShiftTab && m.modes != nil {
-		m.addEntry(kindInfo, "permission mode: "+m.modes.Cycle().String())
+		mode := m.modes.Cycle().String()
+		m.relayout() // the badge may appear or disappear
+		m.addEntry(kindInfo, "permission mode: "+mode)
 		return m, nil
 	}
 
@@ -306,6 +392,23 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "esc" && m.cancel != nil {
 			m.cancel()
 			m.addEntry(kindInfo, "interrupted")
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "ctrl+f":
+		return m.enterSearch()
+	case "up":
+		if s, ok := m.inputHist.prev(); ok {
+			m.input.SetValue(s)
+			m.input.CursorEnd()
+		}
+		return m, nil
+	case "down":
+		if s, ok := m.inputHist.next(); ok {
+			m.input.SetValue(s)
+			m.input.CursorEnd()
 		}
 		return m, nil
 	}
@@ -320,37 +423,99 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleScroll moves the transcript viewport for the recognized scroll keys and
-// reports whether it consumed the key. Other keys are left for the input field
-// and dialogs. It takes a pointer so the viewport's scroll position sticks.
+// reports whether it consumed the key. It deliberately avoids keys the input
+// field uses for editing (home/end, ctrl+u, ctrl+a/e, word motions), so only
+// page (pgup/pgdown) and line (shift+↑/↓) scrolling are claimed here; the mouse
+// wheel scrolls too (handled in Update). It takes a pointer so the scroll
+// position sticks.
 func (m *Model) handleScroll(msg tea.KeyMsg) bool {
 	switch msg.String() {
 	case "pgup":
 		m.viewport.ViewUp()
 	case "pgdown":
 		m.viewport.ViewDown()
-	case "ctrl+u":
-		m.viewport.HalfViewUp()
-	case "ctrl+d":
-		m.viewport.HalfViewDown()
 	case "shift+up":
 		m.viewport.LineUp(1)
 	case "shift+down":
 		m.viewport.LineDown(1)
-	case "home":
-		m.viewport.GotoTop()
-	case "end":
-		m.viewport.GotoBottom()
 	default:
 		return false
 	}
 	return true
 }
 
+// enterSearch switches the input into transcript-find mode.
+func (m Model) enterSearch() (tea.Model, tea.Cmd) {
+	m.searching = true
+	m.search.clear()
+	m.input.Reset()
+	m.input.Placeholder = "search transcript…"
+	return m, nil
+}
+
+// exitSearch leaves find mode and restores the normal prompt.
+func (m *Model) exitSearch() {
+	m.searching = false
+	m.search.clear()
+	m.input.Reset()
+	m.input.Placeholder = "Ask Korai…"
+}
+
+// onSearchKey handles keys while the input is a find box: esc exits, enter and
+// ctrl+n/↓ jump to the next match, ctrl+p/↑ to the previous, and any other key
+// edits the query and re-runs the search.
+func (m Model) onSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.exitSearch()
+		return m, nil
+	case "enter", "ctrl+n", "down":
+		m.search.nextHit()
+		m.scrollToMatch()
+		return m, nil
+	case "ctrl+p", "up":
+		m.search.prevHit()
+		m.scrollToMatch()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.search.run(m.input.Value(), m.entryTexts())
+	m.scrollToMatch()
+	return m, cmd
+}
+
+// entryTexts returns the raw text of every transcript entry, for searching.
+func (m Model) entryTexts() []string {
+	texts := make([]string, len(m.entries))
+	for i := range m.entries {
+		texts[i] = m.entries[i].text
+	}
+	return texts
+}
+
+// scrollToMatch scrolls the viewport so the current search match is in view.
+func (m *Model) scrollToMatch() {
+	idx, ok := m.search.current()
+	if !ok {
+		return
+	}
+	if off := m.entryLineOffset(idx); off >= 0 {
+		m.viewport.SetYOffset(off)
+	}
+}
+
 func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var decision perm.Decision
+	var (
+		decision   perm.Decision
+		forSession bool
+	)
 	switch msg.String() {
 	case "y", "Y":
 		decision = perm.DecisionAllow
+	case "a", "A":
+		decision = perm.DecisionAllow
+		forSession = true
 	case "n", "N", "esc":
 		decision = perm.DecisionDeny
 	default:
@@ -360,7 +525,11 @@ func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	pr := *m.pending
 	m.pending = nil
 	verb := "denied"
-	if decision == perm.DecisionAllow {
+	switch {
+	case forSession:
+		m.sessionAllowed[pr.req.ToolName] = true
+		verb = "allowed for session"
+	case decision == perm.DecisionAllow:
 		verb = "allowed"
 	}
 	m.addEntry(kindInfo, fmt.Sprintf("%s %s", verb, pr.req.ToolName))
@@ -390,11 +559,28 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) submit() (tea.Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input.Value())
+	line := m.input.Value()
+	// A trailing backslash continues the prompt on the next line instead of
+	// submitting, so multi-line input is possible without a multiline widget.
+	if strings.HasSuffix(line, "\\") {
+		m.draft += strings.TrimSuffix(line, "\\") + "\n"
+		m.input.Reset()
+		m.relayout() // the draft preview grows the chrome
+		m.refreshViewport()
+		return m, nil
+	}
+
+	text := strings.TrimSpace(m.draft + line)
+	hadDraft := m.draft != ""
+	m.draft = ""
+	m.input.Reset()
+	if hadDraft {
+		m.relayout()
+	}
 	if text == "" {
 		return m, nil
 	}
-	m.input.Reset()
+	m.inputHist.add(text)
 
 	// Slash commands are handled locally and never reach the model directly.
 	if name, args, ok := command.Parse(text); ok && m.commands != nil {
@@ -518,10 +704,24 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		}
 	case engine.ToolStartEvent:
 		m.streaming = false
+		m.pendingEdit = parseEditChange(ev.Name, ev.Input)
 		m.addEntry(kindTool, toolHeader(ev.Name, ev.Input))
 	case engine.ToolResultEvent:
 		m.streaming = false
 		m.addEntry(kindToolResult, toolSummary(ev.Name, ev.Result))
+		// Show a +/- diff under a successful Edit. The before/after text is kept
+		// on the entry so the block reflows when the terminal is resized.
+		if m.pendingEdit != nil && !ev.Result.IsError {
+			if renderDiff(m.pendingEdit.old, m.pendingEdit.new, m.diffWidth()) != "" {
+				m.entries = append(m.entries, entry{
+					kind:    kindDiff,
+					diffOld: m.pendingEdit.old,
+					diffNew: m.pendingEdit.new,
+				})
+				m.refreshViewport()
+			}
+		}
+		m.pendingEdit = nil
 	case engine.CompactedEvent:
 		m.addEntry(kindInfo, fmt.Sprintf("auto-compacted context: %d → %d messages", ev.Before, ev.After))
 	case engine.DoneEvent:
@@ -541,6 +741,37 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 	return m, waitForEvent(msg.ch)
 }
 
+// parseEditChange extracts the before/after text from an Edit tool's input so a
+// diff can be shown. It returns nil for other tools or unparseable input. A
+// replace-all edit substitutes every occurrence; a single edit substitutes the
+// first, which is what the diff approximates here.
+func parseEditChange(name string, input json.RawMessage) *editChange {
+	if name != "Edit" {
+		return nil
+	}
+	var in struct {
+		OldString  string `json:"old_string"`
+		NewString  string `json:"new_string"`
+		ReplaceAll bool   `json:"replace_all"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil
+	}
+	if in.OldString == "" && in.NewString == "" {
+		return nil
+	}
+	return &editChange{old: in.OldString, new: in.NewString}
+}
+
+// diffWidth is the width available for a diff block, accounting for its indent.
+func (m Model) diffWidth() int {
+	w := m.viewport.Width - 4
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
 // addEntry appends a transcript entry and scrolls to the bottom.
 func (m *Model) addEntry(kind entryKind, text string) {
 	m.entries = append(m.entries, entry{kind: kind, text: text})
@@ -555,34 +786,69 @@ func (m *Model) refreshViewport() {
 	m.viewport.GotoBottom()
 }
 
-// renderEntries assembles the full transcript. Assistant text is rendered as
-// markdown (cached per entry/width); the entry currently being streamed is shown
-// as raw text, since partial markdown is noisy and re-rendering every token is
-// wasteful. Tool calls show a "●" bullet, their results a "⎿" connector.
+// renderEntries assembles the full transcript and records where each entry
+// begins (entryOffsets) so search can scroll to a hit. Assistant text is
+// rendered as markdown (cached per entry/width); the entry currently being
+// streamed is shown as raw text, since partial markdown is noisy and
+// re-rendering every token is wasteful. Tool calls show a "●" bullet, their
+// results a "⎿" connector.
 func (m *Model) renderEntries() string {
 	w := m.viewport.Width
+	m.entryOffsets = make([]int, len(m.entries))
 	var b strings.Builder
+	line := 0
 	for i := range m.entries {
-		e := &m.entries[i]
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		switch e.kind {
-		case kindUser:
-			b.WriteString(m.styles.user.Width(w).Render("› " + e.text))
-		case kindAssistant:
-			b.WriteString(m.assistantText(i, w))
-		case kindTool:
-			b.WriteString(m.styles.tool.Width(w).Render("● " + e.text))
-		case kindToolResult:
-			b.WriteString(m.styles.toolResult.Width(w).Render("  ⎿ " + e.text))
-		case kindError:
-			b.WriteString(m.styles.errorText.Width(w).Render("✗ " + e.text))
-		case kindInfo:
-			b.WriteString(m.styles.info.Width(w).Render("• " + e.text))
-		}
+		m.entryOffsets[i] = line
+		block := m.renderEntry(i, w)
+		b.WriteString(block)
+		line += strings.Count(block, "\n") + 1
 	}
 	return b.String()
+}
+
+// renderEntry renders a single transcript entry to its styled block.
+func (m *Model) renderEntry(i, w int) string {
+	e := &m.entries[i]
+	switch e.kind {
+	case kindUser:
+		return m.styles.user.Width(w).Render("› " + e.text)
+	case kindAssistant:
+		return m.assistantText(i, w)
+	case kindTool:
+		return m.styles.tool.Width(w).Render("● " + e.text)
+	case kindToolResult:
+		return m.styles.toolResult.Width(w).Render("  ⎿ " + e.text)
+	case kindDiff:
+		// Rendered fresh at the current width so it reflows on resize, then
+		// indented under the result it belongs to.
+		return indent(renderDiff(e.diffOld, e.diffNew, m.diffWidth()), "    ")
+	case kindError:
+		return m.styles.errorText.Width(w).Render("✗ " + e.text)
+	case kindInfo:
+		return m.styles.info.Width(w).Render("• " + e.text)
+	}
+	return ""
+}
+
+// entryLineOffset returns the first rendered line of entry idx, or -1 if it has
+// not been laid out yet.
+func (m Model) entryLineOffset(idx int) int {
+	if idx < 0 || idx >= len(m.entryOffsets) {
+		return -1
+	}
+	return m.entryOffsets[idx]
+}
+
+// indent prefixes every line of s with prefix.
+func indent(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // assistantText returns the display form of assistant entry i. The actively
@@ -618,18 +884,104 @@ func (m Model) View() string {
 		bottom = m.renderPlanDialog()
 	case m.pending != nil:
 		bottom = m.renderDialog()
+	case m.searching:
+		bottom = m.renderSearch()
 	case m.busy:
 		bottom = m.spinner.View() + " working… (esc to interrupt)"
 	default:
-		bottom = m.input.View()
+		bottom = m.inputView()
 	}
 
 	lines := []string{m.viewport.View()}
+	if status := m.statusLine(); status != "" {
+		lines = append(lines, status)
+	}
 	if badge := m.modeBadge(); badge != "" {
 		lines = append(lines, badge)
 	}
 	lines = append(lines, bottom)
 	return strings.Join(lines, "\n")
+}
+
+// inputView renders the prompt, any "\"-continued draft lines above it, and a
+// dim argument hint when the user is typing a known slash command.
+func (m Model) inputView() string {
+	v := m.input.View()
+	if hint := m.argHint(); hint != "" {
+		v += "  " + hint
+	}
+	if m.draft != "" {
+		draft := m.styles.status.Render(strings.TrimRight(m.draft, "\n"))
+		return draft + "\n" + v
+	}
+	return v
+}
+
+// argHint returns a dim description of the slash command currently being typed,
+// shown as ghost text next to the prompt. Empty when the input is not a known
+// command.
+func (m Model) argHint() string {
+	if m.commands == nil {
+		return ""
+	}
+	val := m.input.Value()
+	if !strings.HasPrefix(val, "/") {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimPrefix(val, "/"))
+	if len(fields) == 0 {
+		return ""
+	}
+	if c, ok := m.commands.Get(fields[0]); ok {
+		return m.styles.status.Render("— " + c.Description())
+	}
+	return ""
+}
+
+// renderSearch renders the find box and the current match position.
+func (m Model) renderSearch() string {
+	hits := m.search.hits()
+	pos := 0
+	if idx, ok := m.search.current(); ok {
+		for i, h := range hits {
+			if h == idx {
+				pos = i + 1
+				break
+			}
+		}
+	}
+	box := "find: " + m.input.View()
+	meta := m.styles.status.Render(fmt.Sprintf("  %d/%d · enter/↓ next · ↑ prev · esc exit", pos, len(hits)))
+	return box + meta
+}
+
+// statusLine renders the bottom status: active model and token usage so far.
+func (m Model) statusLine() string {
+	var parts []string
+	if m.models != nil {
+		parts = append(parts, m.models.Get())
+	}
+	if m.cost != nil {
+		if in, out := m.cost.Totals(); in > 0 || out > 0 {
+			parts = append(parts, fmt.Sprintf("↑%s ↓%s tok", humanCount(in), humanCount(out)))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return m.styles.status.Render(strings.Join(parts, " · "))
+}
+
+// humanCount formats a token count compactly (1.2k, 3.4M).
+func humanCount(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // modeBadge renders the current permission-mode indicator shown above the input.
@@ -652,9 +1004,10 @@ func (m Model) modeBadge() string {
 
 func (m Model) renderDialog() string {
 	pr := m.pending
-	body := fmt.Sprintf("Allow %s?  [y]es / [n]o", pr.req.ToolName)
+	const prompt = "[y]es once   [a]lways (session)   [n]o"
+	body := fmt.Sprintf("Allow %s?\n%s", pr.req.ToolName, prompt)
 	if args := oneLine(string(pr.req.Input)); args != "" {
-		body = fmt.Sprintf("Allow %s?\n%s\n[y]es / [n]o", pr.req.ToolName, args)
+		body = fmt.Sprintf("Allow %s?\n%s\n%s", pr.req.ToolName, args, prompt)
 	}
 	return m.styles.dialog.Render(body)
 }

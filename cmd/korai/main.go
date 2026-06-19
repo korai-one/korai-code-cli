@@ -227,6 +227,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 
 	model := tui.New(eng, asker, sess.system, sess.commands).
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
+		WithModels(sess.models).WithCost(sess.cost).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
