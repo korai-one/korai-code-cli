@@ -435,11 +435,13 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onSearchKey(msg)
 	}
 
-	// Shift+Tab cycles the permission mode (default → acceptEdits → plan).
+	// Shift+Tab cycles the permission mode (default → acceptEdits → plan). The
+	// current mode is shown by the badge above the input, so cycling does not
+	// post a message into the transcript.
 	if msg.Type == tea.KeyShiftTab && m.modes != nil {
-		mode := m.modes.Cycle().String()
+		m.modes.Cycle()
 		m.relayout() // the badge may appear or disappear
-		m.addEntry(kindInfo, "permission mode: "+mode)
+		m.refreshViewport()
 		return m, nil
 	}
 

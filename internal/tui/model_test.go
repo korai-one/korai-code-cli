@@ -447,11 +447,17 @@ func TestShiftTabCyclesMode(t *testing.T) {
 	if modes.Get() != perm.ModeAcceptEdits {
 		t.Errorf("after one shift+tab = %v, want acceptEdits", modes.Get())
 	}
-	if e := lastEntry(m); e.kind != kindInfo || !strings.Contains(e.text, "acceptEdits") {
-		t.Errorf("expected mode-change info, got %+v", e)
+	// Cycling the mode must not post a message into the transcript; the badge
+	// above the input is the only indicator.
+	if len(m.entries) != 0 {
+		t.Errorf("shift+tab should not add transcript entries, got %d", len(m.entries))
+	}
+	if !strings.Contains(m.View(), "accept edits") {
+		t.Errorf("badge should reflect acceptEdits mode:\n%s", m.View())
 	}
 
-	m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = tm.(Model)
 	if modes.Get() != perm.ModePlan {
 		t.Errorf("after two shift+tab = %v, want plan", modes.Get())
 	}
