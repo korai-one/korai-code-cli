@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/Nevaero/korai-code-cli/internal/command"
 )
 
 // TestCommandMenuFilter covers the pure suggestion filter.
@@ -49,4 +51,26 @@ func TestCommandMenuCaseInsensitive(t *testing.T) {
 	if got := len(commandMenu(all, "/HE")); got != 1 {
 		t.Errorf(`commandMenu("/HE") = %d, want 1 (help)`, got)
 	}
+}
+
+// TestCommandMenuFuzzySubsequence matches non-contiguous characters, not just
+// prefixes — "hp" finds "help", "tls" finds "tools".
+func TestCommandMenuFuzzySubsequence(t *testing.T) {
+	t.Parallel()
+	all := testCommands().All()
+	cases := map[string]string{"/hp": "help", "/tls": "tools", "/qt": "quit"}
+	for input, want := range cases {
+		got := commandMenu(all, input)
+		if len(got) == 0 || got[0].Name() != want {
+			t.Errorf("commandMenu(%q) best match = %v, want %q", input, names(got), want)
+		}
+	}
+}
+
+func names(cs []command.Command) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.Name()
+	}
+	return out
 }

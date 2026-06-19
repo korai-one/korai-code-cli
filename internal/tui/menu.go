@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 
+	"github.com/sahilm/fuzzy"
+
 	"github.com/Nevaero/korai-code-cli/internal/command"
 )
 
@@ -13,9 +15,9 @@ const maxMenuRows = 6
 // commandMenu returns the slash-command suggestions for the current input. It
 // is non-empty only while the user is typing the command name itself — input
 // must begin with "/" and contain no space yet (once an argument is typed the
-// menu gives way to the argument hint). Matches are name-prefix, case-
-// insensitive; "/" alone lists every command. all is assumed sorted by name
-// (command.Registry.All), so the suggestions stay alphabetical.
+// menu gives way to the argument hint). "/" alone lists every command in
+// registry (alphabetical) order; otherwise the typed text is fuzzy-matched
+// against command names and the results are ordered best-match first.
 func commandMenu(all []command.Command, input string) []command.Command {
 	if !strings.HasPrefix(input, "/") {
 		return nil
@@ -24,12 +26,17 @@ func commandMenu(all []command.Command, input string) []command.Command {
 	if strings.ContainsAny(body, " \t") {
 		return nil
 	}
-	q := strings.ToLower(body)
-	var out []command.Command
-	for _, c := range all {
-		if strings.HasPrefix(strings.ToLower(c.Name()), q) {
-			out = append(out, c)
-		}
+	if body == "" {
+		return all
+	}
+	names := make([]string, len(all))
+	for i, c := range all {
+		names[i] = c.Name()
+	}
+	matches := fuzzy.Find(body, names)
+	out := make([]command.Command, len(matches))
+	for i, mt := range matches {
+		out[i] = all[mt.Index]
 	}
 	return out
 }

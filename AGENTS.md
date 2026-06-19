@@ -368,6 +368,7 @@ A unit (tool/service/screen) is done when **all** are true:
 - MCP: `github.com/modelcontextprotocol/go-sdk`
 - Schema: `github.com/invopop/jsonschema`
 - Config: `github.com/joho/godotenv` (loads `.env` for local development)
+- Fuzzy match: `github.com/sahilm/fuzzy` (slash-command menu ranking)
 - Concurrency: `golang.org/x/sync/errgroup`
 - Test compare: `github.com/google/go-cmp`
 - Stdlib for everything else (`log/slog`, `net/http`, `os/exec`, `context`, ...).
