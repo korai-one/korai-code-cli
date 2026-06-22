@@ -168,9 +168,9 @@ func convertMessages(msgs []Message) ([]anthropic.MessageParam, error) {
 		}
 		switch m.Role {
 		case RoleUser:
-			out = append(out, anthropic.NewUserMessage(blocks...))
+			out = append(out, anthropic.NewUserMessage(blocks...)) // TODO KORAI SDK
 		case RoleAssistant:
-			out = append(out, anthropic.NewAssistantMessage(blocks...))
+			out = append(out, anthropic.NewAssistantMessage(blocks...)) // TODO KORAI SDK
 		default:
 			return nil, fmt.Errorf("unknown role %q", m.Role)
 		}
@@ -184,15 +184,15 @@ func convertContentBlocks(blocks []ContentBlock) ([]anthropic.ContentBlockParamU
 	for _, b := range blocks {
 		switch v := b.(type) {
 		case TextBlock:
-			out = append(out, anthropic.NewTextBlock(v.Text))
+			out = append(out, anthropic.NewTextBlock(v.Text)) // TODO KORAI SDK
 		case ToolCallBlock:
-			out = append(out, anthropic.NewToolUseBlock(v.ID, v.Input, v.Name))
+			out = append(out, anthropic.NewToolUseBlock(v.ID, v.Input, v.Name)) // TODO KORAI SDK
 		case ToolResultBlock:
 			content := v.Content
 			if v.IsError {
 				content = "ERROR: " + content
 			}
-			out = append(out, anthropic.NewToolResultBlock(v.ToolCallID, content, v.IsError))
+			out = append(out, anthropic.NewToolResultBlock(v.ToolCallID, content, v.IsError)) // TODO KORAI SDK
 		default:
 			return nil, fmt.Errorf("unknown content block type %T", b)
 		}
@@ -215,7 +215,7 @@ func convertTools(tools []ToolDef) ([]anthropic.ToolUnionParam, error) {
 		}
 		tp := anthropic.ToolParam{
 			Name:        t.Name,
-			Description: anthropic.String(t.Description),
+			Description: anthropic.String(t.Description), // TODO KORAI SDK
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Properties: schema.Properties,
 				Required:   schema.Required,
