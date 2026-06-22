@@ -129,7 +129,7 @@ func rootCmd() *cobra.Command {
 
 	root.Flags().BoolVarP(&printMode, "print", "p", false,
 		"run a single prompt (from the argument or stdin) and exit")
-	root.Flags().StringVar(&model, "model", "claude-sonnet-4-6", "model identifier")
+	root.Flags().StringVar(&model, "model", "", "model identifier (default: the backend's default — auto for Korai)")
 	root.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
 	root.Flags().StringVar(&permModeStr, "permission-mode", "default",
 		"permission mode: default | plan | acceptEdits | bypassPermissions")

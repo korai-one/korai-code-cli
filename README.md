@@ -98,7 +98,9 @@ korai --resume 20260619-074412-a1b2c3d4
 korai --model <model-id> --print "explain this codebase"
 ```
 
-Configuration lives under `.korai/` (project) and `~/.korai/` (user): `settings.json`, `skills/*.md`, `MEMORY.md`, and saved `sessions/`. Set `ANTHROPIC_API_KEY` for the current backend.
+Configuration lives under `.korai/` (project) and `~/.korai/` (user): `settings.json`, `skills/*.md`, `MEMORY.md`, and saved `sessions/`.
+
+**Backend:** set `KORAI_API_KEY` to use the Korai P2P inference network (optionally `KORAI_BASE_URL`); the model defaults to the `auto` routing alias. If only `ANTHROPIC_API_KEY` is set, the CLI falls back to the Anthropic backend. Either key can live in a `.env` file (gitignored) — see `.env.example`.
 
 ---
 
