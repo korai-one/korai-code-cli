@@ -114,11 +114,20 @@ func (b backend) models() []string {
 	return anthropicModels
 }
 
+// defaultKoraiBaseURL is the orchestrator the CLI targets when KORAI_BASE_URL is
+// not set. It points at the current EU deployment rather than the SDK's own
+// cloud default; set KORAI_BASE_URL to override.
+const defaultKoraiBaseURL = "https://korai-eu.fly.dev"
+
 // newClient constructs the apiclient.Client for this backend, reading the key
 // (and, for Korai, the optional base URL) from the environment.
 func (b backend) newClient(model string) apiclient.Client {
 	if b == backendKorai {
-		return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), os.Getenv("KORAI_BASE_URL"), model)
+		baseURL := os.Getenv("KORAI_BASE_URL")
+		if baseURL == "" {
+			baseURL = defaultKoraiBaseURL
+		}
+		return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), baseURL, model)
 	}
 	return apiclient.NewAnthropicClient(os.Getenv("ANTHROPIC_API_KEY"), model)
 }
