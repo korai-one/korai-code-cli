@@ -66,13 +66,13 @@ func (c *AnthropicClient) buildParams(req Request) (anthropic.MessageNewParams, 
 		model = req.Model
 	}
 
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(model),
+	params := anthropic.MessageNewParams{ // TODO KORAI SDK
+		Model:     anthropic.Model(model), // TODO KORAI SDK
 		MaxTokens: maxTokens,
 		Messages:  msgs,
 	}
 	if req.System != "" {
-		params.System = []anthropic.TextBlockParam{{Text: req.System}}
+		params.System = []anthropic.TextBlockParam{{Text: req.System}} // TODO KORAI SDK
 	}
 	if len(req.Tools) > 0 {
 		tools, err := convertTools(req.Tools)
@@ -213,15 +213,15 @@ func convertTools(tools []ToolDef) ([]anthropic.ToolUnionParam, error) {
 		if err := json.Unmarshal(t.InputSchema, &schema); err != nil {
 			return nil, fmt.Errorf("tool %q: bad input schema: %w", t.Name, err)
 		}
-		tp := anthropic.ToolParam{
+		tp := anthropic.ToolParam{ // TODO KORAI SDK
 			Name:        t.Name,
-			Description: anthropic.String(t.Description), // TODO KORAI SDK
+			Description: anthropic.String(t.Description),
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Properties: schema.Properties,
 				Required:   schema.Required,
 			},
 		}
-		out = append(out, anthropic.ToolUnionParam{OfTool: &tp})
+		out = append(out, anthropic.ToolUnionParam{OfTool: &tp}) // TODO KORAI SDK
 	}
 	return out, nil
 }
