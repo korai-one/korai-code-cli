@@ -21,7 +21,7 @@ jobs:
         run: go install golang.org/x/tools/cmd/goimports@latest
 
       - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           install-mode: binary
           skip-cache: false
