@@ -619,13 +619,13 @@ func (m Model) acceptMenu() (tea.Model, tea.Cmd) {
 func (m *Model) handleScroll(msg tea.KeyMsg) bool {
 	switch msg.String() {
 	case "pgup":
-		m.viewport.ViewUp()
+		m.viewport.PageUp()
 	case "pgdown":
-		m.viewport.ViewDown()
+		m.viewport.PageDown()
 	case "shift+up":
-		m.viewport.LineUp(1)
+		m.viewport.ScrollUp(1)
 	case "shift+down":
-		m.viewport.LineDown(1)
+		m.viewport.ScrollDown(1)
 	default:
 		return false
 	}
