@@ -23,8 +23,9 @@ import (
 )
 
 // version is the Korai CLI version, shown by --version and the TUI welcome
-// banner. Bump on release; a build system may override it via -ldflags.
-const version = "0.1.0"
+// banner. Bump on release; the release build overrides it via
+// -ldflags "-X main.version=<tag>" (which requires a var, not a const).
+var version = "0.1.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
