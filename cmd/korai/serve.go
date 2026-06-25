@@ -135,7 +135,10 @@ func runServe(ctx context.Context, opts serveOptions) error {
 
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		// Derive from ctx (so request-scoped values carry through) but strip its
+		// cancellation — ctx is already done here, and Shutdown needs a live
+		// context bounded only by the grace period.
+		shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
