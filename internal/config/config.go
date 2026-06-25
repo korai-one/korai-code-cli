@@ -41,11 +41,12 @@ type MCPServerSpec struct {
 }
 
 // Defaults returns the baseline Settings used before any config file or flag
-// override is applied: a default model, the "default" permission mode, and
-// empty permission and MCP-server collections.
+// override is applied: the "default" permission mode and empty permission and
+// MCP-server collections. Model is intentionally empty so the active backend
+// chooses its own default when neither config nor the --model flag sets one.
 func Defaults() Settings {
 	return Settings{
-		Model:          "claude-sonnet-4-6",
+		Model:          "",
 		PermissionMode: "default",
 		Permissions:    Permissions{},
 		MCPServers:     map[string]MCPServerSpec{},

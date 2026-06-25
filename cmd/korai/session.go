@@ -59,12 +59,77 @@ type assembled struct {
 	resumeLoad     func(id string) ([]apiclient.Message, time.Time, error)
 }
 
-// availableModels is the set the /model command switches between. The active
-// model is always selectable even if it is not in this list.
-var availableModels = []string{
+// backend identifies which inference backend a session talks to. The choice is
+// made from the environment (see selectBackend) and determines the client, the
+// default model, and the model list the /model command offers.
+type backend int
+
+const (
+	// backendKorai routes inference through the Korai P2P network (KoraiClient).
+	backendKorai backend = iota
+	// backendAnthropic routes inference through the Anthropic API (AnthropicClient).
+	backendAnthropic
+)
+
+// koraiModels is the set the /model command offers on the Korai backend: the
+// orchestrator's routing aliases. ListModels could fetch the live set, but that
+// needs a network round-trip at startup; the aliases are always valid.
+var koraiModels = []string{"auto", "fast", "balanced", "deep"}
+
+// anthropicModels is the set the /model command offers on the Anthropic backend.
+var anthropicModels = []string{
 	"claude-opus-4-8",
 	"claude-sonnet-4-6",
 	"claude-haiku-4-5",
+}
+
+// selectBackend picks the inference backend from the environment: Korai when
+// KORAI_API_KEY is set, otherwise Anthropic when ANTHROPIC_API_KEY is set. This
+// lets the two backends coexist during the migration — set KORAI_API_KEY to opt
+// in. Returns an error when neither key is present.
+func selectBackend() (backend, error) {
+	switch {
+	case os.Getenv("KORAI_API_KEY") != "":
+		return backendKorai, nil
+	case os.Getenv("ANTHROPIC_API_KEY") != "":
+		return backendAnthropic, nil
+	default:
+		return 0, fmt.Errorf("no API key set: export KORAI_API_KEY (or ANTHROPIC_API_KEY) or put it in a .env file")
+	}
+}
+
+// defaultModel returns the model used when neither a flag nor config selects one.
+func (b backend) defaultModel() string {
+	if b == backendKorai {
+		return "auto"
+	}
+	return "claude-sonnet-4-6"
+}
+
+// models returns the model list the /model command offers for this backend.
+func (b backend) models() []string {
+	if b == backendKorai {
+		return koraiModels
+	}
+	return anthropicModels
+}
+
+// defaultKoraiBaseURL is the orchestrator the CLI targets when KORAI_BASE_URL is
+// not set. It points at the current EU deployment rather than the SDK's own
+// cloud default; set KORAI_BASE_URL to override.
+const defaultKoraiBaseURL = "https://korai-eu.fly.dev"
+
+// newClient constructs the apiclient.Client for this backend, reading the key
+// (and, for Korai, the optional base URL) from the environment.
+func (b backend) newClient(model string) apiclient.Client {
+	if b == backendKorai {
+		baseURL := os.Getenv("KORAI_BASE_URL")
+		if baseURL == "" {
+			baseURL = defaultKoraiBaseURL
+		}
+		return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), baseURL, model)
+	}
+	return apiclient.NewAnthropicClient(os.Getenv("ANTHROPIC_API_KEY"), model)
 }
 
 // close releases session resources (e.g. MCP server connections).
@@ -88,9 +153,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("loading .env: %w", err)
 	}
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set (export it or put it in a .env file)")
+	bk, err := selectBackend()
+	if err != nil {
+		return nil, err
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -103,9 +168,13 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		return nil, fmt.Errorf("loading settings: %w", err)
 	}
 
+	// Model precedence: --model flag, then config, then the backend default.
 	model := opts.model
 	if !opts.modelSet && settings.Model != "" {
 		model = settings.Model
+	}
+	if model == "" {
+		model = bk.defaultModel()
 	}
 	mode := opts.permMode
 	if !opts.permModeSet {
@@ -115,7 +184,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 
 	deps := tool.Deps{WorkDir: wd}
-	client := apiclient.NewAnthropicClient(apiKey, model)
+	client := bk.newClient(model)
 	models := apiclient.NewModelSelector(model)
 	modes := perm.NewModeSelector(mode)
 	costTracker := cost.NewTracker()
@@ -174,7 +243,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	return &assembled{
 		client:    client,
 		registry:  registry,
-		commands:  buildCommands(home, wd, registry, models, modes, costTracker, sessStore),
+		commands:  buildCommands(home, wd, registry, bk.models(), models, modes, costTracker, sessStore),
 		models:    models,
 		modes:     modes,
 		cost:      costTracker,
@@ -276,7 +345,7 @@ func aboutText() string {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore *session.Store) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore *session.Store) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -287,7 +356,7 @@ func buildCommands(home, wd string, registry *tool.Registry, models *apiclient.M
 		return names
 	})
 	reg.Register(command.NewAboutCommand(aboutText()))
-	reg.Register(command.NewModelCommand(availableModels, models))
+	reg.Register(command.NewModelCommand(modelList, models))
 	reg.Register(command.NewCostCommand(costTracker.Summary))
 	reg.Register(command.NewCompactCommand())
 	reg.Register(command.NewPlanCommand(

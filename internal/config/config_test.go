@@ -13,7 +13,7 @@ import (
 
 func TestDefaults(t *testing.T) {
 	want := config.Settings{
-		Model:          "claude-sonnet-4-6",
+		Model:          "",
 		PermissionMode: "default",
 		Permissions:    config.Permissions{},
 		MCPServers:     map[string]config.MCPServerSpec{},

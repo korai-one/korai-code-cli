@@ -364,7 +364,8 @@ A unit (tool/service/screen) is done when **all** are true:
 - TUI: `github.com/charmbracelet/bubbletea`, `.../lipgloss`, `.../bubbles`,
   `.../glamour` (markdown→ANSI rendering of assistant text),
   `github.com/76creates/stickers`; TUI tests `.../x/exp/teatest`
-- LLM: `github.com/anthropics/anthropic-sdk-go`
+- LLM: `github.com/anthropics/anthropic-sdk-go`,
+  `github.com/korai-one/korai-sdk-go` (the Korai P2P inference backend)
 - MCP: `github.com/modelcontextprotocol/go-sdk`
 - Schema: `github.com/invopop/jsonschema`
 - Config: `github.com/joho/godotenv` (loads `.env` for local development)

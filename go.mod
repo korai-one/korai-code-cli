@@ -1,6 +1,6 @@
 module github.com/Nevaero/korai-code-cli
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.50.2
@@ -12,6 +12,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/joho/godotenv v1.5.1
+	github.com/korai-one/korai-sdk-go v0.1.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/spf13/cobra v1.10.2
@@ -19,6 +20,7 @@ require (
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymanbagabas/go-udiff v0.3.1 // indirect
@@ -37,6 +39,7 @@ require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
@@ -48,6 +51,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
+	github.com/oapi-codegen/runtime v1.4.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -63,10 +67,10 @@ require (
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/net v0.41.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.36.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/term v0.38.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
 )
