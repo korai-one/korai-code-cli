@@ -31,6 +31,11 @@ import (
 // after the context is cancelled.
 const shutdownGrace = 5 * time.Second
 
+// listenLinePrefix tags the stdout line that announces the bound WebSocket URL,
+// e.g. "KORAI_KODE_LISTEN=ws://127.0.0.1:54321/ws". A parent process matches
+// this prefix, strips it, and loopback-checks the URL before connecting.
+const listenLinePrefix = "KORAI_KODE_LISTEN="
+
 // serveOptions holds the resolved flags for `korai serve`.
 type serveOptions struct {
 	port    int
@@ -109,9 +114,13 @@ func runServe(ctx context.Context, opts serveOptions) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	// Announce the bound address on stdout so a parent process can discover the
-	// port chosen by --port 0. Keep this the first stdout line and stable.
-	fmt.Printf("listening on %s\n", ln.Addr().String())
+	// Announce the bound WebSocket URL on stdout so a parent process (the Tauri
+	// sidecar) can discover the port chosen by --port 0. The line is a stable,
+	// machine-parseable, loopback-only prefix mirroring the worker's
+	// KORAI_LOCAL_LISTEN convention: the parent strips the prefix and verifies
+	// the 127.0.0.1 host before trusting it. Keep this the first stdout line.
+	fmt.Printf("%s%s\n", listenLinePrefix, "ws://"+ln.Addr().String()+"/ws")
+	slog.Info("serve listening", "addr", ln.Addr().String())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", srv.handleWS)
