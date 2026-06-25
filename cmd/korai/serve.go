@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,19 +39,22 @@ const listenLinePrefix = "KORAI_KODE_LISTEN="
 
 // serveOptions holds the resolved flags for `korai serve`.
 type serveOptions struct {
-	port        int
-	dir         string
-	autoYes     bool
-	localWorker string
+	port           int
+	host           string
+	dir            string
+	autoYes        bool
+	localWorker    string
+	authToken      string
+	allowedOrigins []string
 }
 
-// originPatterns is the allow-list for the WebSocket Origin header. Requests
-// with no Origin (server-to-server, e.g. the orchestrator dialing a VM, or a
-// websocat probe) are always accepted by coder/websocket; these patterns gate
-// browser-originated connections (the Tauri webview and local dev). The
-// orchestrator→VM proxy hop carries no browser Origin, so the network frontier
-// is authenticated at the orchestrator, not here (see KODE_CORE_PLAN.md §3).
-var originPatterns = []string{
+// defaultOriginPatterns is the base allow-list for the WebSocket Origin header.
+// Requests with no Origin (server-to-server, e.g. a proxy hop or a websocat
+// probe) are always accepted by coder/websocket; these patterns gate
+// browser-originated connections (the Tauri webview and local dev). Deployments
+// extend this with --allowed-origin (e.g. the dashboard's domain when a browser
+// connects straight to a sandbox).
+var defaultOriginPatterns = []string{
 	"localhost", "localhost:*",
 	"127.0.0.1", "127.0.0.1:*",
 	"tauri.localhost",
@@ -62,11 +66,14 @@ var originPatterns = []string{
 // the same Go engine the CLI uses, with no client-side reimplementation.
 func serveCmd() *cobra.Command {
 	var (
-		port        int
-		dir         string
-		autoYes     bool
-		debug       bool
-		localWorker string
+		port           int
+		host           string
+		dir            string
+		autoYes        bool
+		debug          bool
+		localWorker    string
+		authToken      string
+		allowedOrigins []string
 	)
 	cmd := &cobra.Command{
 		Use:           "serve",
@@ -77,15 +84,24 @@ func serveCmd() *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			setupLogging(debug, os.Stderr)
-			return runServe(cmd.Context(), serveOptions{port: port, dir: dir, autoYes: autoYes, localWorker: localWorker})
+			return runServe(cmd.Context(), serveOptions{
+				port: port, host: host, dir: dir, autoYes: autoYes,
+				localWorker: localWorker, authToken: authToken, allowedOrigins: allowedOrigins,
+			})
 		},
 	}
 	cmd.Flags().IntVar(&port, "port", 0, "port to listen on (0 picks a free port)")
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1",
+		"bind address; use 0.0.0.0 inside an isolated sandbox so an exposed port is reachable")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the session (default: current directory)")
 	cmd.Flags().BoolVar(&autoYes, "yes", false, "auto-approve every tool call instead of asking the client")
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
 	cmd.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
+	cmd.Flags().StringVar(&authToken, "auth-token", "",
+		"require this token as the ?token= query parameter on the WebSocket upgrade (gates browser→sandbox connections)")
+	cmd.Flags().StringArrayVar(&allowedOrigins, "allowed-origin", nil,
+		"additional allowed WebSocket Origin host pattern (e.g. korai.one, *.vercel.app); repeatable")
 	return cmd
 }
 
@@ -112,9 +128,18 @@ func runServe(ctx context.Context, opts serveOptions) error {
 	}
 	defer sess.close()
 
-	srv := &server{sess: sess, autoYes: opts.autoYes}
+	host := opts.host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	srv := &server{
+		sess:           sess,
+		autoYes:        opts.autoYes,
+		authToken:      opts.authToken,
+		originPatterns: append(append([]string{}, defaultOriginPatterns...), opts.allowedOrigins...),
+	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", opts.port))
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, opts.port))
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
@@ -153,6 +178,14 @@ func runServe(ctx context.Context, opts serveOptions) error {
 type server struct {
 	sess    *assembled
 	autoYes bool
+	// authToken, when non-empty, must be presented as ?token= on the WebSocket
+	// upgrade. It gates a browser connecting straight to a sandbox over a public
+	// URL (the sandbox port is reachable by anyone who learns the URL; the token
+	// is the credential). Empty disables the check (loopback/Tauri/local).
+	authToken string
+	// originPatterns is the Origin allow-list for the upgrade (defaults plus any
+	// --allowed-origin values).
+	originPatterns []string
 }
 
 // handleWS upgrades one connection and runs a session over it. The read loop and
@@ -161,7 +194,17 @@ type server struct {
 // only the read loop — still reading — can deliver that perm_res. Mixing them
 // would deadlock the first permission prompt.
 func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: originPatterns})
+	// Gate the upgrade on the shared token before doing any protocol work, when
+	// configured. Constant-time compare so a wrong token leaks no timing signal.
+	if s.authToken != "" {
+		got := r.URL.Query().Get("token")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.originPatterns})
 	if err != nil {
 		slog.Warn("websocket accept failed", "error", err)
 		return
