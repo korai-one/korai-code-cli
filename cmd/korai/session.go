@@ -19,6 +19,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/hook"
+	"github.com/Nevaero/korai-code-cli/internal/localworker"
 	"github.com/Nevaero/korai-code-cli/internal/mcp"
 	"github.com/Nevaero/korai-code-cli/internal/memory"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -153,9 +154,26 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("loading .env: %w", err)
 	}
-	bk, err := selectBackend()
-	if err != nil {
-		return nil, err
+
+	// Local worker takes precedence over the networked backends: an explicit
+	// --local-worker-url / KORAI_LOCAL_WORKER_URL override, otherwise a worker
+	// that advertised itself and answers a health probe. When present, inference
+	// goes straight to the loopback worker — no orchestrator, no network.
+	localOverride := opts.localWorkerURL
+	if localOverride == "" {
+		localOverride = os.Getenv("KORAI_LOCAL_WORKER_URL")
+	}
+	localURL, useLocal := localworker.Resolve(ctx, localOverride, nil)
+
+	var bk backend
+	if useLocal {
+		bk = backendKorai
+		slog.Info("using local worker", "url", localURL)
+	} else {
+		var err error
+		if bk, err = selectBackend(); err != nil {
+			return nil, err
+		}
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -184,7 +202,14 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 
 	deps := tool.Deps{WorkDir: wd}
-	client := bk.newClient(model)
+	// The local worker needs no API key; the networked backends read theirs from
+	// the environment via newClient.
+	var client apiclient.Client
+	if useLocal {
+		client = apiclient.NewKoraiClient("", localURL, model)
+	} else {
+		client = bk.newClient(model)
+	}
 	models := apiclient.NewModelSelector(model)
 	modes := perm.NewModeSelector(mode)
 	costTracker := cost.NewTracker()

@@ -38,9 +38,10 @@ const listenLinePrefix = "KORAI_KODE_LISTEN="
 
 // serveOptions holds the resolved flags for `korai serve`.
 type serveOptions struct {
-	port    int
-	dir     string
-	autoYes bool
+	port        int
+	dir         string
+	autoYes     bool
+	localWorker string
 }
 
 // originPatterns is the allow-list for the WebSocket Origin header. Requests
@@ -61,10 +62,11 @@ var originPatterns = []string{
 // the same Go engine the CLI uses, with no client-side reimplementation.
 func serveCmd() *cobra.Command {
 	var (
-		port    int
-		dir     string
-		autoYes bool
-		debug   bool
+		port        int
+		dir         string
+		autoYes     bool
+		debug       bool
+		localWorker string
 	)
 	cmd := &cobra.Command{
 		Use:           "serve",
@@ -75,13 +77,15 @@ func serveCmd() *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			setupLogging(debug, os.Stderr)
-			return runServe(cmd.Context(), serveOptions{port: port, dir: dir, autoYes: autoYes})
+			return runServe(cmd.Context(), serveOptions{port: port, dir: dir, autoYes: autoYes, localWorker: localWorker})
 		},
 	}
 	cmd.Flags().IntVar(&port, "port", 0, "port to listen on (0 picks a free port)")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the session (default: current directory)")
 	cmd.Flags().BoolVar(&autoYes, "yes", false, "auto-approve every tool call instead of asking the client")
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
+	cmd.Flags().StringVar(&localWorker, "local-worker-url", "",
+		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
 	return cmd
 }
 
@@ -102,7 +106,7 @@ func runServe(ctx context.Context, opts serveOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	sess, err := assemble(ctx, runOptions{autoYes: opts.autoYes}, headlessPlanApprover{autoYes: opts.autoYes})
+	sess, err := assemble(ctx, runOptions{autoYes: opts.autoYes, localWorkerURL: opts.localWorker}, headlessPlanApprover{autoYes: opts.autoYes})
 	if err != nil {
 		return err
 	}
