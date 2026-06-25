@@ -1,0 +1,356 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/spf13/cobra"
+
+	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/Nevaero/korai-code-cli/internal/compact"
+	"github.com/Nevaero/korai-code-cli/internal/engine"
+	"github.com/Nevaero/korai-code-cli/internal/perm"
+	"github.com/Nevaero/korai-code-cli/internal/proto"
+	"github.com/Nevaero/korai-code-cli/internal/wsasker"
+	"github.com/Nevaero/korai-code-cli/internal/wsevent"
+)
+
+// shutdownGrace bounds how long Serve waits for in-flight connections to drain
+// after the context is cancelled.
+const shutdownGrace = 5 * time.Second
+
+// serveOptions holds the resolved flags for `korai serve`.
+type serveOptions struct {
+	port    int
+	dir     string
+	autoYes bool
+}
+
+// originPatterns is the allow-list for the WebSocket Origin header. Requests
+// with no Origin (server-to-server, e.g. the orchestrator dialing a VM, or a
+// websocat probe) are always accepted by coder/websocket; these patterns gate
+// browser-originated connections (the Tauri webview and local dev). The
+// orchestrator→VM proxy hop carries no browser Origin, so the network frontier
+// is authenticated at the orchestrator, not here (see KODE_CORE_PLAN.md §3).
+var originPatterns = []string{
+	"localhost", "localhost:*",
+	"127.0.0.1", "127.0.0.1:*",
+	"tauri.localhost",
+	"korai.one", "*.korai.one",
+}
+
+// serveCmd is the `korai serve` subcommand: it runs the engine behind a
+// WebSocket endpoint so a thin client (desktop webview, browser, mobile) drives
+// the same Go engine the CLI uses, with no client-side reimplementation.
+func serveCmd() *cobra.Command {
+	var (
+		port    int
+		dir     string
+		autoYes bool
+		debug   bool
+	)
+	cmd := &cobra.Command{
+		Use:           "serve",
+		Short:         "Serve the engine over WebSocket for web and desktop clients",
+		Long:          "Run the Korai engine behind a WebSocket endpoint (GET /ws).\n\nEach connection is one session driven by the JSON wire protocol in internal/proto.\nThe bound address is printed to stdout on startup so a parent process (the Tauri\nsidecar) can read the chosen port.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			setupLogging(debug, os.Stderr)
+			return runServe(cmd.Context(), serveOptions{port: port, dir: dir, autoYes: autoYes})
+		},
+	}
+	cmd.Flags().IntVar(&port, "port", 0, "port to listen on (0 picks a free port)")
+	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the session (default: current directory)")
+	cmd.Flags().BoolVar(&autoYes, "yes", false, "auto-approve every tool call instead of asking the client")
+	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
+	return cmd
+}
+
+// runServe assembles one shared session and serves it over WebSocket until the
+// context is cancelled (SIGINT/SIGTERM). The session's read-mostly parts
+// (client, tool registry, system prompt, hooks, compactor) are shared across
+// connections; each connection gets its own permission asker, engine, and
+// history. serve targets one active session per process — the Tauri sidecar and
+// the per-session VM both run a dedicated `korai serve` — so the shared
+// ModeSelector is acceptable.
+func runServe(ctx context.Context, opts serveOptions) error {
+	if opts.dir != "" {
+		if err := os.Chdir(opts.dir); err != nil {
+			return fmt.Errorf("chdir %q: %w", opts.dir, err)
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	sess, err := assemble(ctx, runOptions{autoYes: opts.autoYes}, headlessPlanApprover{autoYes: opts.autoYes})
+	if err != nil {
+		return err
+	}
+	defer sess.close()
+
+	srv := &server{sess: sess, autoYes: opts.autoYes}
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", opts.port))
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	// Announce the bound address on stdout so a parent process can discover the
+	// port chosen by --port 0. Keep this the first stdout line and stable.
+	fmt.Printf("listening on %s\n", ln.Addr().String())
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", srv.handleWS)
+	httpSrv := &http.Server{
+		Handler:     mux,
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
+
+	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("serve: %w", err)
+	}
+	return nil
+}
+
+// server holds the shared session and serves WebSocket connections.
+type server struct {
+	sess    *assembled
+	autoYes bool
+}
+
+// handleWS upgrades one connection and runs a session over it. The read loop and
+// the turn worker run on separate goroutines on purpose: a tool that needs
+// permission blocks the worker inside WSAsker.Ask until the client answers, and
+// only the read loop — still reading — can deliver that perm_res. Mixing them
+// would deadlock the first permission prompt.
+func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: originPatterns})
+	if err != nil {
+		slog.Warn("websocket accept failed", "error", err)
+		return
+	}
+	defer func() { _ = c.CloseNow() }()
+
+	connCtx, cancelConn := context.WithCancel(r.Context())
+	defer cancelConn()
+
+	// All writes go through send, serialized: coder/websocket allows only one
+	// concurrent writer, and both the worker (via the bridge) and the read loop
+	// (error replies) write.
+	var writeMu sync.Mutex
+	send := func(ev proto.ServerEvent) error {
+		data, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return c.Write(connCtx, websocket.MessageText, data)
+	}
+
+	// Permission resolution: WSAsker round-trips to the client, unless --yes
+	// auto-approves everything.
+	var (
+		askerWS *wsasker.Asker
+		asker   perm.Asker = perm.AllowAsker{}
+	)
+	if !s.autoYes {
+		askerWS = wsasker.New(send)
+		asker = askerWS
+	}
+	permEngine := perm.NewEngine(s.sess.modes, s.sess.rules, asker)
+	eng := engine.New(s.sess.client, s.sess.registry, permEngine, s.sess.deps,
+		engine.WithHooks(s.sess.hooks), engine.WithModelSelector(s.sess.models),
+		engine.WithUsageRecorder(s.sess.cost.Add), engine.WithSystemSuffix(planSuffix(s.sess.modes)),
+		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, s.sess.compactor))
+
+	// cancelTurn cancels the in-flight turn for abort; guarded because the read
+	// loop (abort) and the worker (set/clear) both touch it.
+	var turnMu sync.Mutex
+	var cancelTurn context.CancelFunc
+	setCancel := func(f context.CancelFunc) {
+		turnMu.Lock()
+		cancelTurn = f
+		turnMu.Unlock()
+	}
+	abort := func() {
+		turnMu.Lock()
+		if cancelTurn != nil {
+			cancelTurn()
+		}
+		turnMu.Unlock()
+	}
+
+	// actions carries user messages and slash commands to the worker so every
+	// history mutation happens in one goroutine. Capacity 1 with a non-blocking
+	// send means a message arriving mid-turn is rejected as busy rather than
+	// blocking the read loop (which must keep delivering perm_res).
+	actions := make(chan proto.ClientMsg, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.worker(connCtx, eng, send, setCancel, actions)
+	}()
+
+	for {
+		_, data, err := c.Read(connCtx)
+		if err != nil {
+			break
+		}
+		var msg proto.ClientMsg
+		if err := json.Unmarshal(data, &msg); err != nil {
+			_ = send(proto.Error("invalid message: " + err.Error()))
+			continue
+		}
+		switch msg.Type {
+		case proto.TypePermRes:
+			if askerWS != nil {
+				askerWS.Resolve(msg.ID, msg.Approved)
+			}
+		case proto.TypeAbort:
+			abort()
+		case proto.TypeMessage, proto.TypeSlash:
+			select {
+			case actions <- msg:
+			default:
+				_ = send(proto.Error("busy: a turn is already running"))
+			}
+		default:
+			_ = send(proto.Error("unknown message type: " + msg.Type))
+		}
+	}
+
+	cancelConn()   // unblock an in-flight turn and any pending permission ask
+	close(actions) // let the worker drain and exit
+	wg.Wait()
+}
+
+// worker owns the conversation history and runs turns one at a time. It reads
+// actions until the channel closes, running each user message as a turn and
+// each slash command through the command registry.
+func (s *server) worker(
+	ctx context.Context,
+	eng *engine.Engine,
+	send func(proto.ServerEvent) error,
+	setCancel func(context.CancelFunc),
+	actions <-chan proto.ClientMsg,
+) {
+	history := append([]apiclient.Message{}, s.sess.initialHistory...)
+
+	// runTurn appends text as a user message, runs the engine, bridges its
+	// events to the client, and returns the post-turn history. ok is false when
+	// a send failed (the connection is broken) so the worker can stop.
+	runTurn := func(text string) (ok bool) {
+		history = append(history, userMessage(text))
+		turnCtx, cancel := context.WithCancel(ctx)
+		setCancel(cancel)
+		newHistory, err := wsevent.Bridge(eng.Run(turnCtx, history, s.sess.system), send)
+		cancel()
+		setCancel(nil)
+		if newHistory != nil {
+			history = newHistory
+			s.sess.saver(s.sess.sessionID, s.sess.sessionStart, history)
+		}
+		return err == nil
+	}
+
+	for act := range actions {
+		switch act.Type {
+		case proto.TypeMessage:
+			if !runTurn(act.Text) {
+				return
+			}
+		case proto.TypeSlash:
+			submit, ok := s.runSlash(ctx, act.Cmd, act.Text, send, &history)
+			if !ok {
+				continue
+			}
+			if submit != "" && !runTurn(submit) {
+				return
+			}
+		}
+	}
+}
+
+// runSlash runs a slash command and acts on its Result. It reports the text to
+// submit as a turn (non-empty only for SubmitPrompt) and whether to proceed.
+// History-mutating actions (Clear, CompactHistory) write through historyPtr so
+// the worker's single copy stays authoritative. Unsupported-in-serve actions
+// (Quit, ResumeSession) are surfaced as a notice rather than acted on.
+func (s *server) runSlash(
+	ctx context.Context,
+	name, args string,
+	send func(proto.ServerEvent) error,
+	historyPtr *[]apiclient.Message,
+) (submit string, ok bool) {
+	cmd, found := s.sess.commands.Get(name)
+	if !found {
+		_ = send(proto.Error("unknown command: /" + name))
+		_ = send(proto.Done())
+		return "", false
+	}
+	res, err := cmd.Run(args)
+	if err != nil {
+		_ = send(proto.Error(err.Error()))
+		_ = send(proto.Done())
+		return "", false
+	}
+
+	switch res.Action {
+	case command.SubmitPrompt:
+		return res.Text, true
+	case command.Clear:
+		*historyPtr = []apiclient.Message{}
+		_ = send(proto.Text("(conversation cleared)"))
+		_ = send(proto.Done())
+		return "", false
+	case command.CompactHistory:
+		compacted, cerr := s.sess.compactor(ctx, *historyPtr)
+		if cerr != nil {
+			_ = send(proto.Error("compaction failed: " + cerr.Error()))
+			_ = send(proto.Done())
+			return "", false
+		}
+		before := len(*historyPtr)
+		*historyPtr = compacted
+		_ = send(proto.Compact(before, len(compacted)))
+		_ = send(proto.Done())
+		return "", false
+	default: // ShowText, Quit, ResumeSession — informational in serve mode
+		if res.Text != "" {
+			_ = send(proto.Text(res.Text))
+		}
+		_ = send(proto.Done())
+		return "", false
+	}
+}
+
+// userMessage wraps raw text as a user-role message.
+func userMessage(text string) apiclient.Message {
+	return apiclient.Message{
+		Role:    apiclient.RoleUser,
+		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: text}},
+	}
+}

@@ -140,6 +140,8 @@ func rootCmd() *cobra.Command {
 	root.Flags().StringVar(&resumeID, "resume", "",
 		"resume a saved session by id")
 
+	root.AddCommand(serveCmd())
+
 	return root
 }
 
