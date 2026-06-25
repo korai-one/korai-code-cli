@@ -23,8 +23,9 @@ import (
 )
 
 // version is the Korai CLI version, shown by --version and the TUI welcome
-// banner. Bump on release; a build system may override it via -ldflags.
-const version = "0.1.0"
+// banner. Bump on release; the release build overrides it via
+// -ldflags "-X main.version=<tag>" (which requires a var, not a const).
+var version = "0.1.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -63,6 +64,10 @@ type runOptions struct {
 	autoYes     bool
 	cont        bool
 	resumeID    string
+	// localWorkerURL, when set, routes inference straight to a loopback Korai
+	// worker (bypassing the orchestrator). Empty means auto-detect an advertised
+	// worker, then fall back to the networked backend.
+	localWorkerURL string
 }
 
 func rootCmd() *cobra.Command {
@@ -74,6 +79,7 @@ func rootCmd() *cobra.Command {
 		autoYes     bool
 		cont        bool
 		resumeID    string
+		localWorker string
 	)
 
 	root := &cobra.Command{
@@ -92,13 +98,14 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			opts := runOptions{
-				model:       model,
-				modelSet:    cmd.Flags().Changed("model"),
-				permMode:    mode,
-				permModeSet: cmd.Flags().Changed("permission-mode"),
-				autoYes:     autoYes,
-				cont:        cont,
-				resumeID:    resumeID,
+				model:          model,
+				modelSet:       cmd.Flags().Changed("model"),
+				permMode:       mode,
+				permModeSet:    cmd.Flags().Changed("permission-mode"),
+				autoYes:        autoYes,
+				cont:           cont,
+				resumeID:       resumeID,
+				localWorkerURL: localWorker,
 			}
 			if printMode {
 				prompt, perr := resolvePrompt(args)
@@ -139,6 +146,10 @@ func rootCmd() *cobra.Command {
 		"resume the most recent session in this directory")
 	root.Flags().StringVar(&resumeID, "resume", "",
 		"resume a saved session by id")
+	root.Flags().StringVar(&localWorker, "local-worker-url", "",
+		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
+
+	root.AddCommand(serveCmd())
 
 	return root
 }

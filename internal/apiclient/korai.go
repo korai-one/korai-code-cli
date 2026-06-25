@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	korai "github.com/korai-one/korai-sdk-go"
 )
 
@@ -15,17 +16,17 @@ import (
 // backend. As with AnthropicClient, no korai.* type crosses this package
 // boundary: everything is converted to apiclient's own types at the edge.
 //
-// Tool use today: the Korai SSE stream does not yet carry structured tool calls
-// (see HANDOFF-korai-sdk-tool-use.md). Because this CLI is a tool-calling agent,
-// Complete therefore uses the buffered ChatComplete path, which returns
-// structured tool calls AND real token usage, and synthesizes our streaming
-// Event sequence from the single response. When the SDK starts emitting
-// structured tool-use events over the stream (the acceptance check in
-// HANDOFF-korai-sdk-tool-use.md §6), replace runBuffered with a streaming
-// adapter over korai.Client.ChatStream that maps the new tool_use_start /
-// tool_use_delta / tool_use_stop / usage events onto our ToolCallStart /
-// ToolCallInputDelta / ToolCallComplete / MessageComplete events — nothing
-// above this package changes.
+// Tool use: Korai hosts open-weight models that are not trained for OpenAI
+// structured tool calls, and the whole Korai stack — the orchestrator's tool
+// loop and the local worker alike — uses a prompt-based text-fence dialect
+// instead (<tool:NAME>{json}</tool>). This client therefore translates at the
+// boundary (see fence.go): tool schemas are rendered into the system prompt as
+// fence instructions, conversation history's structured tool calls/results are
+// replayed as fence text, and the model's reply is parsed back into our
+// structured ToolCallStart / ToolCallComplete events. The engine above never
+// knows; it speaks structured tool calls throughout. Complete uses the buffered
+// ChatComplete path (real token usage, whole-reply fence parsing); if a backend
+// ever does return structured ToolCalls they are honored as a fallback.
 type KoraiClient struct {
 	inner *korai.Client
 	model string
@@ -79,23 +80,43 @@ func (c *KoraiClient) runBuffered(ctx context.Context, req korai.ChatRequest, ch
 	choice := resp.Choices[0]
 	msg := choice.Message
 
-	if msg.Content != "" {
-		if !sendKorai(ctx, ch, TextDeltaEvent{Text: msg.Content}) {
+	// Korai text models return tool calls as <tool:NAME>{json}</tool> fences in
+	// the reply text, not structured ToolCalls. Strip the fences from the text
+	// and surface them as structured tool-call events. The cleaned text (the
+	// model's prose around the fences) is emitted first so the UI shows it.
+	cleanText, fences := parseToolFences(msg.Content)
+	if cleanText != "" {
+		if !sendKorai(ctx, ch, TextDeltaEvent{Text: cleanText}) {
 			return
 		}
 	}
 
-	for _, tc := range msg.ToolCalls {
-		input, err := json.Marshal(tc.Input)
-		if err != nil {
-			sendKorai(ctx, ch, ErrorEvent{Err: fmt.Errorf("korai: marshaling input for tool %q: %w", tc.Name, err)})
-			return
+	if len(msg.ToolCalls) > 0 {
+		// Structured fallback: honor a backend that does return real tool calls.
+		for _, tc := range msg.ToolCalls {
+			input, err := json.Marshal(tc.Input)
+			if err != nil {
+				sendKorai(ctx, ch, ErrorEvent{Err: fmt.Errorf("korai: marshaling input for tool %q: %w", tc.Name, err)})
+				return
+			}
+			if !sendKorai(ctx, ch, ToolCallStartEvent{ID: tc.ID, Name: tc.Name}) {
+				return
+			}
+			if !sendKorai(ctx, ch, ToolCallCompleteEvent{ID: tc.ID, Name: tc.Name, Input: input}) {
+				return
+			}
 		}
-		if !sendKorai(ctx, ch, ToolCallStartEvent{ID: tc.ID, Name: tc.Name}) {
-			return
-		}
-		if !sendKorai(ctx, ch, ToolCallCompleteEvent{ID: tc.ID, Name: tc.Name, Input: input}) {
-			return
+	} else {
+		// Fence path: synthesize an id per call so the engine can match the
+		// result back; the model never sees it.
+		for _, f := range fences {
+			id := uuid.NewString()
+			if !sendKorai(ctx, ch, ToolCallStartEvent{ID: id, Name: f.Name}) {
+				return
+			}
+			if !sendKorai(ctx, ch, ToolCallCompleteEvent{ID: id, Name: f.Name, Input: f.Input}) {
+				return
+			}
 		}
 	}
 
@@ -138,116 +159,83 @@ func (c *KoraiClient) buildChatRequest(req Request) (korai.ChatRequest, error) {
 		maxTokens = 8096
 	}
 
+	system := req.System
+	// Tools are taught via fence instructions in the system prompt, not the
+	// OpenAI Tools field — Korai text models ignore the latter. See fence.go.
+	if instr := renderToolInstructions(req.Tools); instr != "" {
+		if system != "" {
+			system += "\n\n" + instr
+		} else {
+			system = instr
+		}
+	}
+
 	cr := korai.ChatRequest{
 		Model:     model,
 		Messages:  msgs,
-		System:    req.System,
+		System:    system,
 		MaxTokens: int(maxTokens),
-	}
-	if len(req.Tools) > 0 {
-		tools, err := convertToKoraiTools(req.Tools)
-		if err != nil {
-			return korai.ChatRequest{}, fmt.Errorf("converting tools: %w", err)
-		}
-		cr.Tools = tools
 	}
 	return cr, nil
 }
 
 // convertToKoraiMessages flattens our block-structured messages into Korai's
-// flat OpenAI-style message list. A user turn's text becomes a role="user"
-// message; an assistant turn's text + tool calls become one role="assistant"
-// message; each tool result becomes its own role="tool" message. Korai requires
-// a Name on tool-result messages, which our ToolResultBlock does not carry, so
-// the tool name is recovered by matching ToolCallID against the tool calls seen
-// on the preceding assistant turn.
+// flat message list using the fence dialect (see fence.go). An assistant turn's
+// tool calls are rendered back into <tool:NAME>{json}</tool> text appended to
+// its content; a user turn's tool results are rendered as [TOOL RESULT: name]
+// text. The tool name for a result is recovered by matching ToolCallID against
+// the calls seen on the preceding assistant turn. Nothing uses role="tool" or
+// structured ToolCalls, because Korai text models understand neither.
 func convertToKoraiMessages(msgs []Message) ([]korai.Message, error) {
 	out := make([]korai.Message, 0, len(msgs))
 	// toolNames maps a tool_call_id to the tool's name, populated from assistant
-	// tool calls and read back when emitting the matching role="tool" result.
+	// tool calls and read back when rendering the matching result text.
 	toolNames := make(map[string]string)
 
 	for _, m := range msgs {
 		switch m.Role {
 		case RoleUser:
+			var parts []string
 			var text strings.Builder
-			var toolResults []korai.Message
 			for _, b := range m.Content {
 				switch v := b.(type) {
 				case TextBlock:
 					text.WriteString(v.Text)
 				case ToolResultBlock:
-					content := v.Content
-					if v.IsError {
-						content = "ERROR: " + content
-					}
-					toolResults = append(toolResults, korai.Message{
-						Role:       "tool",
-						Content:    content,
-						ToolCallID: v.ToolCallID,
-						Name:       toolNames[v.ToolCallID],
-					})
+					parts = append(parts, renderToolResultText(toolNames[v.ToolCallID], v.Content, v.IsError))
 				default:
 					return nil, fmt.Errorf("unsupported block %T in user message", b)
 				}
 			}
-			// Emit a user message only when there is actual text (or when the
-			// turn is genuinely empty), so a results-only turn does not inject a
-			// stray blank user message between the assistant call and its results.
-			if text.Len() > 0 || len(toolResults) == 0 {
-				out = append(out, korai.Message{Role: "user", Content: text.String()})
+			if text.Len() > 0 {
+				parts = append([]string{text.String()}, parts...)
 			}
-			out = append(out, toolResults...)
+			// One user message carrying the genuine text and/or the tool-result
+			// feedback. A genuinely empty user turn still emits an empty message
+			// so the turn count is preserved.
+			out = append(out, korai.Message{Role: "user", Content: strings.Join(parts, "\n\n")})
 
 		case RoleAssistant:
 			var text strings.Builder
-			var calls []korai.ToolCall
 			for _, b := range m.Content {
 				switch v := b.(type) {
 				case TextBlock:
 					text.WriteString(v.Text)
 				case ToolCallBlock:
-					var input map[string]any
-					if len(v.Input) > 0 {
-						if err := json.Unmarshal(v.Input, &input); err != nil {
-							return nil, fmt.Errorf("tool call %q: bad input json: %w", v.Name, err)
-						}
+					if text.Len() > 0 {
+						text.WriteString("\n")
 					}
-					calls = append(calls, korai.ToolCall{ID: v.ID, Name: v.Name, Input: input})
+					text.WriteString(renderToolCallFence(v.Name, v.Input))
 					toolNames[v.ID] = v.Name
 				default:
 					return nil, fmt.Errorf("unsupported block %T in assistant message", b)
 				}
 			}
-			out = append(out, korai.Message{Role: "assistant", Content: text.String(), ToolCalls: calls})
+			out = append(out, korai.Message{Role: "assistant", Content: text.String()})
 
 		default:
 			return nil, fmt.Errorf("unknown role %q", m.Role)
 		}
-	}
-	return out, nil
-}
-
-// convertToKoraiTools renders our tool definitions into the OpenAI tool schema
-// shape Korai's chat-completions endpoint expects. The full JSON Schema object
-// is passed through verbatim as the function parameters.
-func convertToKoraiTools(tools []ToolDef) ([]any, error) {
-	out := make([]any, 0, len(tools))
-	for _, t := range tools {
-		var params any
-		if len(t.InputSchema) > 0 {
-			if err := json.Unmarshal(t.InputSchema, &params); err != nil {
-				return nil, fmt.Errorf("tool %q: bad input schema: %w", t.Name, err)
-			}
-		}
-		out = append(out, korai.OpenAITool{
-			Type: "function",
-			Function: korai.OpenAIToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  params,
-			},
-		})
 	}
 	return out, nil
 }

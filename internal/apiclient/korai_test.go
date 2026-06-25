@@ -12,9 +12,10 @@ import (
 )
 
 // TestConvertToKoraiMessages verifies that block-structured messages flatten
-// into Korai's OpenAI-style list: user text, an assistant turn carrying tool
-// calls, and a role="tool" result whose Name is recovered from the matching
-// assistant tool call.
+// into Korai's fence dialect: user text, an assistant turn whose tool call is
+// rendered as a <tool:…> fence appended to its content, and a tool result
+// rendered as [TOOL RESULT: name] text in a user message (no role="tool", no
+// structured ToolCalls).
 func TestConvertToKoraiMessages(t *testing.T) {
 	t.Parallel()
 
@@ -40,25 +41,19 @@ func TestConvertToKoraiMessages(t *testing.T) {
 	if got[0].Role != "user" || got[0].Content != "read x" {
 		t.Errorf("msg[0] = %+v, want user/read x", got[0])
 	}
-	if got[1].Role != "assistant" || got[1].Content != "ok" {
-		t.Errorf("msg[1] = %+v, want assistant/ok", got[1])
+	if got[1].Role != "assistant" || got[1].Content != "ok\n<tool:ReadFile>{\"path\":\"x\"}</tool>" {
+		t.Errorf("msg[1] content = %q, want text + fence", got[1].Content)
 	}
-	if len(got[1].ToolCalls) != 1 || got[1].ToolCalls[0].ID != "c1" || got[1].ToolCalls[0].Name != "ReadFile" {
-		t.Errorf("msg[1] tool calls = %+v, want one ReadFile call", got[1].ToolCalls)
+	if len(got[1].ToolCalls) != 0 {
+		t.Errorf("msg[1] must carry no structured ToolCalls, got %+v", got[1].ToolCalls)
 	}
-	if got[1].ToolCalls[0].Input["path"] != "x" {
-		t.Errorf("tool call input = %+v, want path=x", got[1].ToolCalls[0].Input)
-	}
-	if got[2].Role != "tool" || got[2].ToolCallID != "c1" || got[2].Content != "data" {
-		t.Errorf("msg[2] = %+v, want tool result for c1", got[2])
-	}
-	if got[2].Name != "ReadFile" {
-		t.Errorf("msg[2] name = %q, want ReadFile (recovered from the call)", got[2].Name)
+	if got[2].Role != "user" || got[2].Content != "[TOOL RESULT: ReadFile]\ndata" {
+		t.Errorf("msg[2] = %+v, want user tool-result text for ReadFile", got[2])
 	}
 }
 
-// TestConvertToKoraiMessagesErrorResult verifies an error tool result is marked
-// in the content the model sees.
+// TestConvertToKoraiMessagesErrorResult verifies an error tool result renders
+// with the [TOOL ERROR: name] label the model sees.
 func TestConvertToKoraiMessagesErrorResult(t *testing.T) {
 	t.Parallel()
 
@@ -73,56 +68,14 @@ func TestConvertToKoraiMessagesErrorResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convertToKoraiMessages: %v", err)
 	}
-	// assistant + tool result, no stray empty user message.
 	if len(got) != 2 {
 		t.Fatalf("got %d messages, want 2: %+v", len(got), got)
 	}
-	if got[1].Content != "ERROR: boom" {
-		t.Errorf("error result content = %q, want \"ERROR: boom\"", got[1].Content)
+	if got[0].Content != "<tool:Bash>{}</tool>" {
+		t.Errorf("assistant content = %q, want the Bash fence", got[0].Content)
 	}
-}
-
-// TestConvertToKoraiTools verifies tool defs render into the OpenAI function
-// shape with the JSON Schema passed through as parameters.
-func TestConvertToKoraiTools(t *testing.T) {
-	t.Parallel()
-
-	schema := json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
-	got, err := convertToKoraiTools([]ToolDef{{Name: "ReadFile", Description: "reads a file", InputSchema: schema}})
-	if err != nil {
-		t.Fatalf("convertToKoraiTools: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("got %d tools, want 1", len(got))
-	}
-	// Round-trip through JSON to assert the wire shape independent of the SDK type.
-	raw, err := json.Marshal(got[0])
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var shape struct {
-		Type     string `json:"type"`
-		Function struct {
-			Name       string         `json:"name"`
-			Parameters map[string]any `json:"parameters"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(raw, &shape); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if shape.Type != "function" || shape.Function.Name != "ReadFile" {
-		t.Errorf("shape = %+v, want function/ReadFile", shape)
-	}
-	if shape.Function.Parameters["type"] != "object" {
-		t.Errorf("parameters not passed through: %+v", shape.Function.Parameters)
-	}
-}
-
-func TestConvertToKoraiToolsBadSchema(t *testing.T) {
-	t.Parallel()
-	_, err := convertToKoraiTools([]ToolDef{{Name: "Broken", InputSchema: json.RawMessage(`{not json`)}})
-	if err == nil {
-		t.Fatal("expected error for invalid schema, got nil")
+	if got[1].Content != "[TOOL ERROR: Bash]\nboom" {
+		t.Errorf("error result content = %q, want \"[TOOL ERROR: Bash]\\nboom\"", got[1].Content)
 	}
 }
 
@@ -224,6 +177,60 @@ func TestKoraiCompleteToolCall(t *testing.T) {
 	}
 	if done, ok := got[2].(MessageCompleteEvent); !ok || done.Usage.InputTokens != 20 {
 		t.Errorf("event[2] = %+v, want MessageComplete with usage", got[2])
+	}
+}
+
+// TestKoraiCompleteFenceToolCall verifies the primary Korai path: a reply whose
+// text carries a <tool:…> fence (and no structured tool_calls) is parsed into a
+// synthesized start+complete pair, with the surrounding prose emitted as text.
+func TestKoraiCompleteFenceToolCall(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"x","object":"chat.completion","model":"auto",
+			"choices":[{"index":0,"message":{"role":"assistant",
+				"content":"Je lis le fichier.\n<tool:ReadFile>{\"path\":\"main.go\"}</tool>"},
+				"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28}
+		}`)
+	}))
+	defer srv.Close()
+
+	c := NewKoraiClient("sk-test", srv.URL, "auto")
+	ch, err := c.Complete(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "read main.go"}}}},
+		Tools:    []ToolDef{{Name: "ReadFile", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	got := drainEvents(t, ch)
+	if len(got) != 4 {
+		t.Fatalf("got %d events, want 4 (text, start, complete, done): %+v", len(got), got)
+	}
+	if txt, ok := got[0].(TextDeltaEvent); !ok || txt.Text != "Je lis le fichier." {
+		t.Errorf("event[0] = %+v, want the prose with the fence stripped", got[0])
+	}
+	start, ok := got[1].(ToolCallStartEvent)
+	if !ok || start.Name != "ReadFile" || start.ID == "" {
+		t.Fatalf("event[1] = %+v, want ToolCallStart ReadFile with a synthesized id", got[1])
+	}
+	complete, ok := got[2].(ToolCallCompleteEvent)
+	if !ok || complete.ID != start.ID || complete.Name != "ReadFile" {
+		t.Fatalf("event[2] = %+v, want ToolCallComplete sharing the start id", got[2])
+	}
+	var input map[string]any
+	if err := json.Unmarshal(complete.Input, &input); err != nil {
+		t.Fatalf("tool input not valid json: %v", err)
+	}
+	if input["path"] != "main.go" {
+		t.Errorf("tool input = %+v, want path=main.go", input)
+	}
+	if _, ok := got[3].(MessageCompleteEvent); !ok {
+		t.Errorf("event[3] = %+v, want MessageComplete", got[3])
 	}
 }
 
