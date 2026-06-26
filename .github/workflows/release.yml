@@ -1,78 +1,93 @@
 name: Release
 
-# Builds the korai binary for Linux (the architecture Vercel Sandbox / any
-# Firecracker host runs) and publishes it as a release asset the sandbox image
-# fetches at build time. Triggered by a version tag, or manually for a one-off
-# build against the current ref.
+# Cuts a versioned release of the korai binary. The repo is public, so the
+# published asset is downloadable without auth — the Kode web backend points
+# KORAI_BINARY_URL at the "latest release" asset:
+#   https://github.com/korai-one/korai-code-cli/releases/latest/download/korai-linux-amd64
+#
+# Triggers:
+#   - push to main (Go sources changed): auto-bump the patch version and release.
+#   - workflow_dispatch: release an explicit version (e.g. v0.2.0) on demand.
 on:
   push:
-    tags: ["v*"]
+    branches: ["main"]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Release tag to create/update (e.g. v0.1.0)"
-        required: true
+      version:
+        description: "Explicit version tag (e.g. v0.2.0). Blank = auto-bump the patch."
+        required: false
         type: string
 
 permissions:
-  contents: write # create releases and upload assets
+  contents: write
+
+# Serialize releases so two pushes can't race to create the same tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+  release:
+    name: tag & publish
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the full tag history to compute the next version
+
+      - name: Determine version
+        id: ver
+        run: |
+          input="${{ github.event.inputs.version }}"
+          if [ -n "$input" ]; then
+            next="$input"
+          else
+            latest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+            if [ -z "$latest" ]; then
+              next="v0.1.0"
+            else
+              v=${latest#v}
+              major=${v%%.*}; rest=${v#*.}; minor=${rest%%.*}; patch=${rest#*.}
+              next="v${major}.${minor}.$((patch + 1))"
+            fi
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "Releasing $next"
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
           cache: true
 
-      - name: Build
+      - name: Build linux binaries
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          # Static binary: no libc dependency, so it runs on Amazon Linux 2023
-          # (Vercel Sandbox) and any minimal rootfs without a glibc match.
           CGO_ENABLED: "0"
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          out="korai-${{ matrix.goos }}-${{ matrix.goarch }}"
-          go build -trimpath -ldflags "-s -w -X main.version=${tag}" -o "${out}" ./cmd/korai
-          sha256sum "${out}" > "${out}.sha256"
+          v="${{ steps.ver.outputs.version }}"
+          for arch in amd64 arm64; do
+            out="korai-linux-${arch}"
+            GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${v}" -o "${out}" ./cmd/korai
+            sha256sum "${out}" > "${out}.sha256"
+          done
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: korai-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            korai-${{ matrix.goos }}-${{ matrix.goarch }}
-            korai-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
-          if-no-files-found: error
-
-  release:
-    name: publish release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Publish
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: dist/*
-          fail_on_unmatched_files: true
+          # Creates the tag at this commit (a GITHUB_TOKEN-created tag does not
+          # re-trigger this workflow, so there is no loop).
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
+          make_latest: true # so releases/latest/download/<asset> serves this
           generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            korai-linux-amd64
+            korai-linux-amd64.sha256
+            korai-linux-arm64
+            korai-linux-arm64.sha256
