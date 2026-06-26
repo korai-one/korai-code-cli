@@ -30,7 +30,46 @@ type fenceCall struct {
 const (
 	fenceOpenPrefix = "<tool:"
 	fenceClose      = "</tool>"
+	// fenceClosePrefix is the start every closing tag shares. The model is told
+	// to emit a bare "</tool>", but open-weight models frequently mirror the
+	// open tag and emit a NAMED close "</tool:NAME>" instead. Accept both (see
+	// findFenceClose) so a named close does not leave the call unparsed — an
+	// unparsed call is never executed, so the user would see a tool block with
+	// no result.
+	fenceClosePrefix = "</tool"
 )
+
+// findFenceClose returns the index and length of the next closing tag in s,
+// accepting both the bare "</tool>" and the named "</tool:NAME>" forms. It
+// skips false matches like "</toolbox>" where "</tool" is not followed by ">"
+// or ":". Returns (-1, 0) when there is no closing tag.
+func findFenceClose(s string) (idx, length int) {
+	from := 0
+	for {
+		rel := strings.Index(s[from:], fenceClosePrefix)
+		if rel < 0 {
+			return -1, 0
+		}
+		i := from + rel
+		after := i + len(fenceClosePrefix)
+		if after >= len(s) {
+			return -1, 0
+		}
+		switch s[after] {
+		case '>': // bare "</tool>"
+			return i, len(fenceClosePrefix) + 1
+		case ':': // named "</tool:NAME>" — scan to the terminating '>'
+			gt := strings.Index(s[after:], ">")
+			if gt >= 0 {
+				return i, (after - i) + gt + 1
+			}
+			// no terminator: treat as not a closer, keep scanning
+			from = after
+		default: // e.g. "</toolbox" — not a closer
+			from = after
+		}
+	}
+}
 
 // renderToolInstructions produces the system-prompt addendum that teaches a
 // fence model how to call the given tools. It returns "" when there are no
@@ -97,7 +136,7 @@ func parseToolFences(text string) (clean string, calls []fenceCall) {
 		name := strings.TrimSpace(rest[len(fenceOpenPrefix):nameEnd])
 		afterOpen := rest[nameEnd+1:]
 
-		closeIdx := strings.Index(afterOpen, fenceClose)
+		closeIdx, closeLen := findFenceClose(afterOpen)
 		if closeIdx < 0 {
 			// No closing tag: malformed, keep the remainder as text.
 			out.WriteString(rest)
@@ -107,7 +146,7 @@ func parseToolFences(text string) (clean string, calls []fenceCall) {
 		if name != "" {
 			calls = append(calls, fenceCall{Name: name, Input: fenceBodyToInput(body)})
 		}
-		remaining = afterOpen[closeIdx+len(fenceClose):]
+		remaining = afterOpen[closeIdx+closeLen:]
 	}
 	return strings.TrimSpace(out.String()), calls
 }

@@ -41,6 +41,31 @@ func TestParseToolFences(t *testing.T) {
 			wantCalls: []fenceCall{{Name: "list_files", Input: json.RawMessage(`{}`)}},
 		},
 		{
+			// Open-weight models often mirror the open tag and emit a named
+			// close. It must parse identically to the bare close.
+			name:      "named closing tag",
+			in:        "I'll run it.\n<tool:RunCommand>{\"command\":\"ls\"}</tool:RunCommand>",
+			wantClean: "I'll run it.",
+			wantCalls: []fenceCall{{Name: "RunCommand", Input: json.RawMessage(`{"command":"ls"}`)}},
+		},
+		{
+			name:      "mixed bare and named closes",
+			in:        "<tool:glob>{\"pattern\":\"*\"}</tool><tool:Bash>{\"command\":\"ls\"}</tool:Bash>",
+			wantClean: "",
+			wantCalls: []fenceCall{
+				{Name: "glob", Input: json.RawMessage(`{"pattern":"*"}`)},
+				{Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+			},
+		},
+		{
+			// "</toolbox>" is not a closer: the fence stays unterminated and is
+			// left as text rather than being mis-closed.
+			name:      "lookalike close is not a closer",
+			in:        "before <tool:read_file>{\"path\":\"x\"}</toolbox>",
+			wantClean: "before <tool:read_file>{\"path\":\"x\"}</toolbox>",
+			wantCalls: nil,
+		},
+		{
 			name:      "no fences",
 			in:        "just text",
 			wantClean: "just text",
