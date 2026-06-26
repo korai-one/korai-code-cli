@@ -411,14 +411,21 @@ func (s *server) runSlash(
 		_ = send(proto.Done())
 		return "", false
 	case command.ResumeSession:
-		// Bind this connection to a saved session: load its history, adopt its
-		// id/created so subsequent saves write back to it, and announce it.
+		// Bind this connection to the session id the client asked for: load its
+		// history if this sandbox's store has it, otherwise bind to the id with
+		// empty history. Binding (rather than erroring) is what reconciles a
+		// client-originated conversation id with the engine session — subsequent
+		// saves write back under that id, so the two stay in lockstep from here.
 		id := strings.TrimSpace(res.Text)
-		msgs, created, lerr := s.sess.resumeLoad(id)
-		if lerr != nil {
-			_ = send(proto.Error("could not resume session: " + lerr.Error()))
+		if id == "" {
+			_ = send(proto.Error("resume requires a session id"))
 			_ = send(proto.Done())
 			return "", false
+		}
+		msgs, created, lerr := s.sess.resumeLoad(id)
+		if lerr != nil {
+			msgs = nil
+			created = time.Now()
 		}
 		*historyPtr = msgs
 		*sessionIDPtr = id
