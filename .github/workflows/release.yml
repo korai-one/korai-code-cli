@@ -64,17 +64,27 @@ jobs:
           go-version: "1.24"
           cache: true
 
-      - name: Build linux binaries
+      - name: Build binaries
+        # Pure-Go (CGO disabled), so every target cross-compiles from the linux
+        # runner with no extra toolchain. Linux feeds the Kode sandbox; darwin
+        # and windows cover the CLI and the desktop sidecar.
         env:
           CGO_ENABLED: "0"
         run: |
           v="${{ steps.ver.outputs.version }}"
-          for arch in amd64 arm64; do
-            out="korai-linux-${arch}"
-            GOOS=linux GOARCH="$arch" go build -trimpath \
+          build() {
+            local goos="$1" goarch="$2" ext="$3"
+            local out="korai-${goos}-${goarch}${ext}"
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath \
               -ldflags "-s -w -X main.version=${v}" -o "${out}" ./cmd/korai
             sha256sum "${out}" > "${out}.sha256"
-          done
+          }
+          build linux   amd64 ""
+          build linux   arm64 ""
+          build darwin  amd64 ""
+          build darwin  arm64 ""
+          build windows amd64 .exe
+          build windows arm64 .exe
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -91,3 +101,11 @@ jobs:
             korai-linux-amd64.sha256
             korai-linux-arm64
             korai-linux-arm64.sha256
+            korai-darwin-amd64
+            korai-darwin-amd64.sha256
+            korai-darwin-arm64
+            korai-darwin-arm64.sha256
+            korai-windows-amd64.exe
+            korai-windows-amd64.exe.sha256
+            korai-windows-arm64.exe
+            korai-windows-arm64.exe.sha256
