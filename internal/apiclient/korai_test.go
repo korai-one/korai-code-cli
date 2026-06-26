@@ -6,10 +6,47 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+// TestBuildChatRequestSystemAsMessage verifies the system prompt (including the
+// fence tool instructions) is sent as a leading role="system" message, not the
+// top-level System field — Korai's endpoints have no such field and would drop
+// it, taking the tool instructions with it.
+func TestBuildChatRequestSystemAsMessage(t *testing.T) {
+	t.Parallel()
+
+	c := &KoraiClient{model: "auto"}
+	cr, err := c.buildChatRequest(Request{
+		System:   "BASE PROMPT",
+		Messages: []Message{{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}}},
+		Tools:    []ToolDef{{Name: "read_file", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("buildChatRequest: %v", err)
+	}
+	if cr.System != "" {
+		t.Errorf("top-level System must be empty (endpoints ignore it), got %q", cr.System)
+	}
+	if len(cr.Messages) != 2 {
+		t.Fatalf("got %d messages, want system + user", len(cr.Messages))
+	}
+	if cr.Messages[0].Role != "system" {
+		t.Fatalf("first message role = %q, want system", cr.Messages[0].Role)
+	}
+	if !strings.Contains(cr.Messages[0].Content, "BASE PROMPT") {
+		t.Error("system message missing the base prompt")
+	}
+	if !strings.Contains(cr.Messages[0].Content, "read_file") {
+		t.Error("system message missing the fence tool instructions")
+	}
+	if cr.Messages[1].Role != "user" {
+		t.Errorf("second message role = %q, want the user turn", cr.Messages[1].Role)
+	}
+}
 
 // TestConvertToKoraiMessages verifies that block-structured messages flatten
 // into Korai's fence dialect: user text, an assistant turn whose tool call is

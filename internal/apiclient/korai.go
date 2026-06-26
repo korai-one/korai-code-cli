@@ -170,10 +170,19 @@ func (c *KoraiClient) buildChatRequest(req Request) (korai.ChatRequest, error) {
 		}
 	}
 
+	// Korai's OpenAI-compatible endpoints (the orchestrator and the local
+	// worker) read the system prompt from a role="system" message, NOT a
+	// top-level "system" field — they have no such field, so it is silently
+	// dropped. Send the prompt (with the fence tool instructions) as the first
+	// message instead, so the model actually receives it. The top-level System
+	// field is left empty deliberately.
+	if system != "" {
+		msgs = append([]korai.Message{{Role: "system", Content: system}}, msgs...)
+	}
+
 	cr := korai.ChatRequest{
 		Model:     model,
 		Messages:  msgs,
-		System:    system,
 		MaxTokens: int(maxTokens),
 	}
 	return cr, nil
