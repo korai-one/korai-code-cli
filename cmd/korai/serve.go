@@ -43,6 +43,7 @@ type serveOptions struct {
 	host           string
 	dir            string
 	autoYes        bool
+	resume         bool
 	localWorker    string
 	authToken      string
 	allowedOrigins []string
@@ -70,6 +71,7 @@ func serveCmd() *cobra.Command {
 		host           string
 		dir            string
 		autoYes        bool
+		resume         bool
 		debug          bool
 		localWorker    string
 		authToken      string
@@ -85,7 +87,7 @@ func serveCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			setupLogging(debug, os.Stderr)
 			return runServe(cmd.Context(), serveOptions{
-				port: port, host: host, dir: dir, autoYes: autoYes,
+				port: port, host: host, dir: dir, autoYes: autoYes, resume: resume,
 				localWorker: localWorker, authToken: authToken, allowedOrigins: allowedOrigins,
 			})
 		},
@@ -95,6 +97,8 @@ func serveCmd() *cobra.Command {
 		"bind address; use 0.0.0.0 inside an isolated sandbox so an exposed port is reachable")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the session (default: current directory)")
 	cmd.Flags().BoolVar(&autoYes, "yes", false, "auto-approve every tool call instead of asking the client")
+	cmd.Flags().BoolVar(&resume, "resume", false,
+		"resume the most recent saved session for --dir (used to continue an expired sandbox)")
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
 	cmd.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
@@ -122,7 +126,11 @@ func runServe(ctx context.Context, opts serveOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	sess, err := assemble(ctx, runOptions{autoYes: opts.autoYes, localWorkerURL: opts.localWorker}, headlessPlanApprover{autoYes: opts.autoYes})
+	// opts.resume → continue the most recent saved session for this working dir.
+	// The session store persists per turn (see worker's saver call) and lives on
+	// the sandbox filesystem, which the Vercel snapshot captures, so restoring a
+	// snapshot and starting with --resume continues the prior conversation.
+	sess, err := assemble(ctx, runOptions{autoYes: opts.autoYes, cont: opts.resume, localWorkerURL: opts.localWorker}, headlessPlanApprover{autoYes: opts.autoYes})
 	if err != nil {
 		return err
 	}
