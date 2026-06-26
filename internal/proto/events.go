@@ -33,6 +33,10 @@ const (
 	TypeError = "error"
 	// TypeDone marks the end of a turn.
 	TypeDone = "done"
+	// TypeSession announces the active session id (on connect, and after a
+	// resume or clear). The client keys its conversation by this id so the
+	// client-side history and the engine's session stay reconciled.
+	TypeSession = "session"
 )
 
 // ServerEvent is any message the server sends to the client. The marker method
@@ -125,6 +129,17 @@ type DoneEvent struct {
 // Done builds a DoneEvent.
 func Done() DoneEvent { return DoneEvent{Type: TypeDone} }
 
+// SessionEvent announces the id of the session now active on the connection.
+// Emitted on connect and after a resume or clear so the client can bind its
+// conversation to the engine's session.
+type SessionEvent struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// Sess builds a SessionEvent. (Named Sess to avoid colliding with the field.)
+func Sess(id string) SessionEvent { return SessionEvent{Type: TypeSession, ID: id} }
+
 func (TextEvent) isServerEvent()       {}
 func (ToolStartEvent) isServerEvent()  {}
 func (ToolResultEvent) isServerEvent() {}
@@ -132,6 +147,7 @@ func (PermReqEvent) isServerEvent()    {}
 func (CompactEvent) isServerEvent()    {}
 func (ErrorEvent) isServerEvent()      {}
 func (DoneEvent) isServerEvent()       {}
+func (SessionEvent) isServerEvent()    {}
 
 // Client→server message type tags.
 const (

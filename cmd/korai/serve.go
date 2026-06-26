@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/proto"
+	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/wsasker"
 	"github.com/Nevaero/korai-code-cli/internal/wsevent"
 )
@@ -325,6 +327,14 @@ func (s *server) worker(
 	actions <-chan proto.ClientMsg,
 ) {
 	history := append([]apiclient.Message{}, s.sess.initialHistory...)
+	// The active session id/start are mutable: /resume swaps to a saved session
+	// and /clear starts a new one. The client binds its conversation to this id.
+	sessionID := s.sess.sessionID
+	sessionStart := s.sess.sessionStart
+
+	// Announce the active session id so the client can reconcile its
+	// conversation with the engine's session.
+	_ = send(proto.Sess(sessionID))
 
 	// runTurn appends text as a user message, runs the engine, bridges its
 	// events to the client, and returns the post-turn history. ok is false when
@@ -338,7 +348,7 @@ func (s *server) worker(
 		setCancel(nil)
 		if newHistory != nil {
 			history = newHistory
-			s.sess.saver(s.sess.sessionID, s.sess.sessionStart, history)
+			s.sess.saver(sessionID, sessionStart, history)
 		}
 		return err == nil
 	}
@@ -350,7 +360,7 @@ func (s *server) worker(
 				return
 			}
 		case proto.TypeSlash:
-			submit, ok := s.runSlash(ctx, act.Cmd, act.Text, send, &history)
+			submit, ok := s.runSlash(ctx, act.Cmd, act.Text, send, &history, &sessionID, &sessionStart)
 			if !ok {
 				continue
 			}
@@ -363,14 +373,16 @@ func (s *server) worker(
 
 // runSlash runs a slash command and acts on its Result. It reports the text to
 // submit as a turn (non-empty only for SubmitPrompt) and whether to proceed.
-// History-mutating actions (Clear, CompactHistory) write through historyPtr so
-// the worker's single copy stays authoritative. Unsupported-in-serve actions
-// (Quit, ResumeSession) are surfaced as a notice rather than acted on.
+// History-mutating actions (Clear, CompactHistory, ResumeSession) write through
+// historyPtr — and the session pointers for Clear/ResumeSession — so the
+// worker's single copy stays authoritative. Quit is informational in serve mode.
 func (s *server) runSlash(
 	ctx context.Context,
 	name, args string,
 	send func(proto.ServerEvent) error,
 	historyPtr *[]apiclient.Message,
+	sessionIDPtr *string,
+	sessionStartPtr *time.Time,
 ) (submit string, ok bool) {
 	cmd, found := s.sess.commands.Get(name)
 	if !found {
@@ -389,8 +401,29 @@ func (s *server) runSlash(
 	case command.SubmitPrompt:
 		return res.Text, true
 	case command.Clear:
+		// Start a NEW engine session so "new conversation" on the client maps to
+		// a distinct session id, and announce it.
 		*historyPtr = []apiclient.Message{}
+		*sessionIDPtr = session.NewID()
+		*sessionStartPtr = time.Now()
+		_ = send(proto.Sess(*sessionIDPtr))
 		_ = send(proto.Text("(conversation cleared)"))
+		_ = send(proto.Done())
+		return "", false
+	case command.ResumeSession:
+		// Bind this connection to a saved session: load its history, adopt its
+		// id/created so subsequent saves write back to it, and announce it.
+		id := strings.TrimSpace(res.Text)
+		msgs, created, lerr := s.sess.resumeLoad(id)
+		if lerr != nil {
+			_ = send(proto.Error("could not resume session: " + lerr.Error()))
+			_ = send(proto.Done())
+			return "", false
+		}
+		*historyPtr = msgs
+		*sessionIDPtr = id
+		*sessionStartPtr = created
+		_ = send(proto.Sess(id))
 		_ = send(proto.Done())
 		return "", false
 	case command.CompactHistory:
@@ -405,7 +438,7 @@ func (s *server) runSlash(
 		_ = send(proto.Compact(before, len(compacted)))
 		_ = send(proto.Done())
 		return "", false
-	default: // ShowText, Quit, ResumeSession — informational in serve mode
+	default: // ShowText, Quit — informational in serve mode
 		if res.Text != "" {
 			_ = send(proto.Text(res.Text))
 		}
