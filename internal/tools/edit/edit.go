@@ -9,14 +9,15 @@ package edit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/invopop/jsonschema"
 
+	"github.com/Nevaero/korai-code-cli/internal/editmatch"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
@@ -111,31 +112,23 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage, deps tool.Deps)
 	}
 	content := string(data)
 
-	count := strings.Count(content, in.OldString)
-	if count == 0 {
-		return tool.Result{
-			Content: fmt.Sprintf("old_string not found in %s", path),
-			IsError: true,
-		}, nil
-	}
-	if !in.ReplaceAll && count > 1 {
-		return tool.Result{
-			Content: fmt.Sprintf(
-				"old_string is not unique; %d occurrences — provide more context or set replace_all",
-				count,
-			),
-			IsError: true,
-		}, nil
-	}
-
-	var updated string
-	var replaced int
-	if in.ReplaceAll {
-		updated = strings.ReplaceAll(content, in.OldString, in.NewString)
-		replaced = count
-	} else {
-		updated = strings.Replace(content, in.OldString, in.NewString, 1)
-		replaced = 1
+	// editmatch tries a cascade of matchers (exact → whitespace/indentation
+	// tolerant → block-anchor → …) so the edit lands even when the model's
+	// old_string drifts slightly from the file, and enforces uniqueness unless
+	// replace_all is set.
+	updated, replaced, err := editmatch.Replace(content, in.OldString, in.NewString, in.ReplaceAll)
+	if err != nil {
+		switch {
+		case errors.Is(err, editmatch.ErrNotFound):
+			return tool.Result{Content: fmt.Sprintf("old_string not found in %s", path), IsError: true}, nil
+		case errors.Is(err, editmatch.ErrNotUnique):
+			return tool.Result{
+				Content: fmt.Sprintf("old_string is not unique in %s — provide more surrounding context or set replace_all", path),
+				IsError: true,
+			}, nil
+		default:
+			return tool.Result{Content: fmt.Sprintf("edit %s: %v", path, err), IsError: true}, nil
+		}
 	}
 
 	mode := os.FileMode(0o644)

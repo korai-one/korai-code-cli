@@ -48,6 +48,9 @@ type Tool interface {
 // decoupled from the lsp package.
 type LSPReporter interface {
 	ReportAfterChange(ctx context.Context, path, content string, timeout time.Duration) string
+	// ReportAfterChanges is the multi-file form, for tools (apply_patch) that
+	// write several files at once: notify all, wait once, report each.
+	ReportAfterChanges(ctx context.Context, files map[string]string, timeout time.Duration) string
 }
 
 // Deps carries injected dependencies available to every tool at execution time.

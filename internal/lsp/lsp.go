@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -190,6 +191,37 @@ func (m *Manager) ReportAfterChange(ctx context.Context, path, content string, t
 	}
 	if proj := ReportProject(m.All(), path); proj != "" {
 		parts = append(parts, proj)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n\n" + strings.Join(parts, "\n")
+}
+
+// ReportAfterChanges is the multi-file form of ReportAfterChange: it notifies
+// the servers for every changed file (path→new content), waits once for them to
+// settle, then returns the concatenated <file_diagnostics> blocks for those
+// files in sorted order. Used by apply_patch, which edits several files at once.
+func (m *Manager) ReportAfterChanges(ctx context.Context, files map[string]string, timeout time.Duration) string {
+	if !m.Enabled() || len(files) == 0 {
+		return ""
+	}
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, p := range paths {
+		m.Notify(ctx, p, files[p])
+	}
+	m.WaitForDiagnostics(ctx, timeout)
+
+	var parts []string
+	for _, p := range paths {
+		if r := Report(p, m.Diagnostics(p)); r != "" {
+			parts = append(parts, r)
+		}
 	}
 	if len(parts) == 0 {
 		return ""
