@@ -122,13 +122,14 @@ type Model struct {
 	snapshots *snapshot.Manager
 	snaplog   *snapshot.Log
 
-	busy         bool
-	pending      *permRequest
-	dialogChoice int // selected option in the permission dialog
-	pendingPlan  *planRequest
-	planChoice   int  // selected option in the plan-approval dialog
-	planFeedback bool // collecting "keep planning" feedback in the input
-	cancel       context.CancelFunc
+	busy           bool
+	pending        *permRequest
+	dialogChoice   int    // selected option in the permission dialog
+	pendingPreview string // rendered diff of the pending mutating edit, shown in the dialog
+	pendingPlan    *planRequest
+	planChoice     int  // selected option in the plan-approval dialog
+	planFeedback   bool // collecting "keep planning" feedback in the input
+	cancel         context.CancelFunc
 
 	width, height int
 	ready         bool
@@ -312,7 +313,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pending = &msg.pr
 		m.dialogChoice = 0
-		m.relayout() // the multi-line dialog needs room
+		// Pre-render the change this edit would make so the user reviews the
+		// actual diff before approving (computed once here, not in the pure View).
+		m.pendingPreview = editPreview(msg.pr.req.ToolName, msg.pr.req.Input, m.diffWidth())
+		m.relayout() // the multi-line dialog (with diff) needs room
 		m.refreshViewport()
 		return m, nil
 	case planRequestMsg:
@@ -789,6 +793,7 @@ func (m Model) onDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) resolvePermission(decision perm.Decision, forSession bool) (tea.Model, tea.Cmd) {
 	pr := *m.pending
 	m.pending = nil
+	m.pendingPreview = ""
 	verb := "denied"
 	switch {
 	case forSession:
@@ -1166,6 +1171,49 @@ func parseEditChange(name string, input json.RawMessage) *editChange {
 	return &editChange{old: in.OldString, new: in.NewString}
 }
 
+// editPreview renders the change a mutating file tool would make, so the user
+// can review it in the permission dialog before it is applied. It is pure (no
+// file I/O — safe to call from Update): Edit shows the old→new replacement,
+// Write shows the new content as additions, ApplyPatch shows the patch itself.
+// Returns "" for non-mutating tools or unparseable input. Height-capped.
+func editPreview(name string, input json.RawMessage, width int) string {
+	const maxLines = 30
+	switch name {
+	case "Edit":
+		if ec := parseEditChange(name, input); ec != nil {
+			return capLines(renderDiff(ec.old, ec.new, width), maxLines)
+		}
+	case "Write":
+		var in struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(input, &in); err == nil && in.Content != "" {
+			return capLines(renderDiff("", in.Content, width), maxLines)
+		}
+	case "ApplyPatch":
+		var in struct {
+			Patch string `json:"patch"`
+		}
+		if err := json.Unmarshal(input, &in); err == nil && strings.TrimSpace(in.Patch) != "" {
+			return capLines(strings.TrimRight(in.Patch, "\n"), maxLines)
+		}
+	}
+	return ""
+}
+
+// capLines truncates s to at most n lines, noting how many were hidden.
+func capLines(s string, n int) string {
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n") + fmt.Sprintf("\n… (%d more lines)", len(lines)-n)
+}
+
 // diffWidth is the width available for a diff block, accounting for its indent.
 func (m Model) diffWidth() int {
 	w := m.viewport.Width() - 4
@@ -1455,7 +1503,10 @@ func (m Model) renderDialog() string {
 	pr := m.pending
 	var b strings.Builder
 	fmt.Fprintf(&b, "Allow %s?", pr.req.ToolName)
-	if args := oneLine(string(pr.req.Input)); args != "" {
+	// For mutating file tools, show the diff under review instead of raw JSON args.
+	if m.pendingPreview != "" {
+		b.WriteString("\n\n" + m.pendingPreview)
+	} else if args := oneLine(string(pr.req.Input)); args != "" {
 		b.WriteString("\n" + args)
 	}
 	b.WriteString("\n\n")
