@@ -15,7 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/joho/godotenv v1.5.1
-	github.com/korai-one/korai-sdk-go v0.1.0
+	github.com/korai-one/korai-sdk-go v0.2.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
@@ -80,5 +80,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/korai-one/korai-sdk-go => C:/Users/RomainPIEBOURG/Documents/dev/PRO/korai/.claude/worktrees/sdk-multimodal/korai-platform/packages/sdk-go
