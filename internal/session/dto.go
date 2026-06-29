@@ -45,7 +45,7 @@ type kindPeek struct {
 }
 
 type blockDTO struct {
-	Kind       string          `json:"kind"` // text | tool_call | tool_result
+	Kind       string          `json:"kind"` // text | tool_call | tool_result | image
 	Text       string          `json:"text,omitempty"`
 	ID         string          `json:"id,omitempty"`
 	Name       string          `json:"name,omitempty"`
@@ -53,6 +53,7 @@ type blockDTO struct {
 	ToolCallID string          `json:"tool_call_id,omitempty"`
 	Content    string          `json:"content,omitempty"`
 	IsError    bool            `json:"is_error,omitempty"`
+	Source     string          `json:"source,omitempty"` // image data URI or URL
 }
 
 func headerFromRecord(r Record, enc string) headerDTO {
@@ -78,6 +79,8 @@ func blockToDTO(b apiclient.ContentBlock) blockDTO {
 		return blockDTO{Kind: "tool_call", ID: v.ID, Name: v.Name, Input: v.Input}
 	case apiclient.ToolResultBlock:
 		return blockDTO{Kind: "tool_result", ToolCallID: v.ToolCallID, Content: v.Content, IsError: v.IsError}
+	case apiclient.ImageBlock:
+		return blockDTO{Kind: "image", Source: v.Source}
 	default:
 		return blockDTO{Kind: "text"}
 	}
@@ -115,6 +118,8 @@ func blockFromDTO(b blockDTO) apiclient.ContentBlock {
 		return apiclient.ToolCallBlock{ID: b.ID, Name: b.Name, Input: compactJSON(b.Input)}
 	case "tool_result":
 		return apiclient.ToolResultBlock{ToolCallID: b.ToolCallID, Content: b.Content, IsError: b.IsError}
+	case "image":
+		return apiclient.ImageBlock{Source: b.Source}
 	default:
 		return nil
 	}

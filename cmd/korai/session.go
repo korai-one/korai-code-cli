@@ -59,6 +59,7 @@ type assembled struct {
 
 	fileFinder      func() []string
 	mentionExpander func(string) string
+	imageAttacher   func(string) []apiclient.ImageBlock
 
 	sessionID      string
 	sessionStart   time.Time
@@ -323,6 +324,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 
 		fileFinder:      workspaceFiles(wd),
 		mentionExpander: mentionExpander(wd),
+		imageAttacher:   imageAttacher(wd),
 
 		sessionID:      sessionID,
 		sessionStart:   sessionStart,

@@ -93,6 +93,7 @@ type Model struct {
 	// are injected so the model does no filesystem I/O itself.
 	fileFinder      func() []string
 	mentionExpander func(string) string
+	imageAttacher   func(string) []apiclient.ImageBlock
 
 	search    transcriptSearch // transcript find state (ctrl+f)
 	searching bool             // the input is acting as a search box
@@ -193,6 +194,14 @@ func (m Model) WithFileFinder(finder func() []string) Model {
 // into a submitted prompt. Call before tea.NewProgram.
 func (m Model) WithMentionExpander(expand func(string) string) Model {
 	m.mentionExpander = expand
+	return m
+}
+
+// WithImageAttacher wires the function that turns @-referenced image files into
+// image content blocks attached to the user turn (for vision-capable models).
+// Call before tea.NewProgram.
+func (m Model) WithImageAttacher(attach func(string) []apiclient.ImageBlock) Model {
+	m.imageAttacher = attach
 	return m
 }
 
@@ -1053,9 +1062,17 @@ func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
 	if m.mentionExpander != nil {
 		sendText = m.mentionExpander(promptText)
 	}
+	blocks := []apiclient.ContentBlock{apiclient.TextBlock{Text: sendText}}
+	// Attach any @-referenced images as image blocks (for vision models). The
+	// raw prompt is scanned, not the expanded text, so the @-tokens are intact.
+	if m.imageAttacher != nil {
+		for _, img := range m.imageAttacher(promptText) {
+			blocks = append(blocks, img)
+		}
+	}
 	m.history = append(m.history, apiclient.Message{
 		Role:    apiclient.RoleUser,
-		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: sendText}},
+		Content: blocks,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

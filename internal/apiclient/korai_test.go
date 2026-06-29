@@ -116,6 +116,38 @@ func TestConvertToKoraiMessagesErrorResult(t *testing.T) {
 	}
 }
 
+// TestConvertToKoraiMessagesImage checks a user message carrying an ImageBlock
+// becomes a multimodal content-parts message (text part + image_url part).
+func TestConvertToKoraiMessagesImage(t *testing.T) {
+	t.Parallel()
+
+	got, err := convertToKoraiMessages([]Message{
+		{Role: RoleUser, Content: []ContentBlock{
+			TextBlock{Text: "what is this?"},
+			ImageBlock{Source: "data:image/png;base64,AAAA"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertToKoraiMessages: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d messages, want 1: %+v", len(got), got)
+	}
+	if got[0].Content != "" {
+		t.Errorf("multimodal message should leave the flat Content empty, got %q", got[0].Content)
+	}
+	if len(got[0].Parts) != 2 {
+		t.Fatalf("want 2 content parts, got %d: %+v", len(got[0].Parts), got[0].Parts)
+	}
+	if got[0].Parts[0].Type != "text" || got[0].Parts[0].Text != "what is this?" {
+		t.Errorf("text part = %+v", got[0].Parts[0])
+	}
+	img := got[0].Parts[1]
+	if img.Type != "image_url" || img.ImageURL == nil || img.ImageURL.URL != "data:image/png;base64,AAAA" {
+		t.Errorf("image part = %+v", img)
+	}
+}
+
 // drainEvents collects all events from a Complete channel.
 func drainEvents(t *testing.T, ch <-chan Event) []Event {
 	t.Helper()

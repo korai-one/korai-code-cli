@@ -246,6 +246,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
 		WithModels(sess.models).WithCost(sess.cost).
 		WithFileFinder(sess.fileFinder).WithMentionExpander(sess.mentionExpander).
+		WithImageAttacher(sess.imageAttacher).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
 		WithSnapshotter(sess.snapshots, sess.snaplog).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)

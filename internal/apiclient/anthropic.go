@@ -178,6 +178,24 @@ func convertMessages(msgs []Message) ([]anthropic.MessageParam, error) {
 	return out, nil
 }
 
+// parseDataURI splits a base64 data URI ("data:<mediatype>;base64,<data>") into
+// its media type and payload. ok is false for anything else (e.g. an https URL).
+func parseDataURI(s string) (mediaType, data string, ok bool) {
+	if !strings.HasPrefix(s, "data:") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(s, "data:")
+	comma := strings.IndexByte(rest, ',')
+	semi := strings.IndexByte(rest, ';')
+	if comma < 0 || semi < 0 || semi > comma {
+		return "", "", false
+	}
+	if !strings.Contains(rest[semi:comma], "base64") {
+		return "", "", false
+	}
+	return rest[:semi], rest[comma+1:], true
+}
+
 // convertContentBlocks converts our ContentBlock slice to anthropic params.
 func convertContentBlocks(blocks []ContentBlock) ([]anthropic.ContentBlockParamUnion, error) {
 	out := make([]anthropic.ContentBlockParamUnion, 0, len(blocks))
@@ -193,6 +211,12 @@ func convertContentBlocks(blocks []ContentBlock) ([]anthropic.ContentBlockParamU
 				content = "ERROR: " + content
 			}
 			out = append(out, anthropic.NewToolResultBlock(v.ToolCallID, content, v.IsError)) // TODO KORAI SDK
+		case ImageBlock:
+			if mt, data, ok := parseDataURI(v.Source); ok {
+				out = append(out, anthropic.NewImageBlockBase64(mt, data)) // TODO KORAI SDK
+			} else {
+				out = append(out, anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: v.Source})) // TODO KORAI SDK
+			}
 		default:
 			return nil, fmt.Errorf("unknown content block type %T", b)
 		}

@@ -80,3 +80,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/korai-one/korai-sdk-go => C:/Users/RomainPIEBOURG/Documents/dev/PRO/korai/.claude/worktrees/sdk-multimodal/korai-platform/packages/sdk-go

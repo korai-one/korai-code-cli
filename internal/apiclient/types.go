@@ -51,9 +51,15 @@ type ToolResultBlock struct {
 	IsError    bool
 }
 
+// ImageBlock holds an image to send to a vision-capable model. Source is a data
+// URI ("data:image/png;base64,<...>") or an https URL. Backends that cannot
+// take images convert or drop it at the edge (the Korai path forwards it).
+type ImageBlock struct{ Source string }
+
 func (TextBlock) contentBlock()       {}
 func (ToolCallBlock) contentBlock()   {}
 func (ToolResultBlock) contentBlock() {}
+func (ImageBlock) contentBlock()      {}
 
 // ToolDef describes a tool the model may call.
 type ToolDef struct {
