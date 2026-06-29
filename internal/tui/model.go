@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
+	"github.com/Nevaero/korai-code-cli/internal/snapshot"
 	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
 )
 
@@ -113,6 +115,12 @@ type Model struct {
 	resumeLoader ResumeLoader
 	sessionID    string
 	sessionStart time.Time
+
+	// snapshots takes a shadow-git checkpoint of the worktree before each turn;
+	// snaplog records the (label, id) of each so /snapshots can list them and
+	// /revert can restore one. Both nil when snapshots are disabled (no git).
+	snapshots *snapshot.Manager
+	snaplog   *snapshot.Log
 
 	busy         bool
 	pending      *permRequest
@@ -247,6 +255,15 @@ func (m Model) WithResumeLoader(l ResumeLoader) Model {
 	return m
 }
 
+// WithSnapshotter wires the shadow-git checkpoint manager and its session log,
+// enabling a snapshot before each turn and the /revert and /snapshots commands.
+// Call before tea.NewProgram.
+func (m Model) WithSnapshotter(mgr *snapshot.Manager, log *snapshot.Log) Model {
+	m.snapshots = mgr
+	m.snaplog = log
+	return m
+}
+
 // WithSession seeds the active session id, its creation time, and any prior
 // history (e.g. from --resume or --continue). Call before tea.NewProgram.
 func (m Model) WithSession(id string, created time.Time, history []apiclient.Message) Model {
@@ -336,6 +353,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries = entriesFromMessages(msg.messages)
 		m.addEntry(kindInfo, fmt.Sprintf("resumed session %s (%d messages)", msg.id, len(msg.messages)))
 		m.refreshViewport()
+		return m, nil
+	case snapshotTakenMsg:
+		if m.snaplog != nil {
+			m.snaplog.Add(msg.label, msg.id)
+		}
+		return m, nil
+	case revertDoneMsg:
+		if msg.err != nil {
+			m.addEntry(kindError, "revert failed: "+msg.err.Error())
+			return m, nil
+		}
+		// Drop the restored snapshot and everything newer, so a further /revert
+		// steps further back rather than re-undoing the same turn.
+		if m.snaplog != nil {
+			m.snaplog.Truncate(msg.steps)
+		}
+		m.addEntry(kindInfo, "reverted file changes from before: "+msg.label)
 		return m, nil
 	}
 	return m, nil
@@ -886,9 +920,72 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 		return m.startCompaction()
 	case command.ResumeSession:
 		return m.startResume(res.Text)
+	case command.RevertSnapshot:
+		return m.startRevert(res.Text)
 	default:
 		return m, nil
 	}
+}
+
+// startRevert restores the worktree to a recorded pre-turn snapshot. With no
+// argument it undoes the last turn (one step back); /revert N steps N turns back.
+func (m Model) startRevert(arg string) (tea.Model, tea.Cmd) {
+	if m.snapshots == nil || !m.snapshots.Enabled() || m.snaplog == nil {
+		m.addEntry(kindInfo, "revert is unavailable (snapshots are off — git not found)")
+		return m, nil
+	}
+	if m.busy {
+		m.addEntry(kindInfo, "cannot revert while a turn is in progress")
+		return m, nil
+	}
+	steps := 1
+	if s := strings.TrimSpace(arg); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			m.addEntry(kindError, "usage: /revert [n] — n is how many turns to undo (default 1)")
+			return m, nil
+		}
+		steps = n
+	}
+	entry, ok := m.snaplog.At(steps)
+	if !ok {
+		m.addEntry(kindInfo, fmt.Sprintf("nothing to revert: only %d snapshot(s) recorded", m.snaplog.Len()))
+		return m, nil
+	}
+	mgr := m.snapshots
+	id, label := entry.ID, entry.Label
+	return m, func() tea.Msg {
+		err := mgr.Restore(context.Background(), id)
+		return revertDoneMsg{label: label, steps: steps, err: err}
+	}
+}
+
+// snapshotCmd checkpoints the worktree before a turn. Snapshots are best-effort:
+// any failure (or a disabled manager) yields no message and never blocks the
+// turn. The git work runs off the Update path, keeping the model pure.
+func (m Model) snapshotCmd(label string) tea.Cmd {
+	mgr := m.snapshots
+	short := snapLabel(label)
+	return func() tea.Msg {
+		id, err := mgr.Snapshot(context.Background())
+		if err != nil || id == "" {
+			return nil
+		}
+		return snapshotTakenMsg{label: short, id: id}
+	}
+}
+
+// snapLabel renders a prompt as a compact single-line label for the undo log.
+func snapLabel(prompt string) string {
+	label := strings.TrimSpace(strings.ReplaceAll(prompt, "\n", " "))
+	const max = 60
+	if len(label) > max {
+		label = label[:max-1] + "…"
+	}
+	if label == "" {
+		label = "(empty prompt)"
+	}
+	return label
 }
 
 // startResume loads a saved session by id via the injected loader.
@@ -967,7 +1064,14 @@ func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
 	m.busy = true
 	m.streaming = false
 
-	return m, tea.Batch(waitForEvent(ch), m.spinner.Tick)
+	cmds := []tea.Cmd{waitForEvent(ch), m.spinner.Tick}
+	// Checkpoint the worktree before the turn's edits land, so /revert can undo
+	// them. The engine streams text before any tool runs, so the snapshot
+	// (git add -A + write-tree) completes well ahead of the first file write.
+	if m.snapshots != nil && m.snapshots.Enabled() {
+		cmds = append(cmds, m.snapshotCmd(promptText))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {

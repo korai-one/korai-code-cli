@@ -25,6 +25,10 @@ const (
 	CompactHistory
 	// ResumeSession asks the host to load the saved session named in Result.Text.
 	ResumeSession
+	// RevertSnapshot asks the host to restore the working tree to a prior
+	// snapshot (undo recent agent file changes). Result.Text is the optional
+	// selector the user passed (empty = the most recent snapshot).
+	RevertSnapshot
 )
 
 // Result is what a command returns to the host.

@@ -42,6 +42,21 @@ type filesLoadedMsg struct {
 	paths []string
 }
 
+// snapshotTakenMsg reports a pre-turn shadow-git checkpoint that was recorded
+// successfully, so the model can append it to the undo log.
+type snapshotTakenMsg struct {
+	label string
+	id    string
+}
+
+// revertDoneMsg carries the result of a /revert: the label of the snapshot the
+// worktree was restored to, how many steps back it was, and any error.
+type revertDoneMsg struct {
+	label string
+	steps int
+	err   error
+}
+
 // resumeLoadedMsg carries the result of loading a saved session.
 type resumeLoadedMsg struct {
 	id       string

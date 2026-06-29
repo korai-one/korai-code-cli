@@ -27,6 +27,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/prompt"
 	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/skill"
+	"github.com/Nevaero/korai-code-cli/internal/snapshot"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 	"github.com/Nevaero/korai-code-cli/internal/tools"
 	agenttool "github.com/Nevaero/korai-code-cli/internal/tools/agent"
@@ -59,6 +60,9 @@ type assembled struct {
 	initialHistory []apiclient.Message
 	saver          func(id string, created time.Time, msgs []apiclient.Message)
 	resumeLoad     func(id string) ([]apiclient.Message, time.Time, error)
+
+	snapshots *snapshot.Manager
+	snaplog   *snapshot.Log
 }
 
 // backend identifies which inference backend a session talks to. The choice is
@@ -253,6 +257,12 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		return compact.Compact(cctx, client, history, compact.DefaultKeepRecent)
 	}
 
+	// Shadow-git snapshots: a worktree checkpoint is taken before each turn and
+	// /revert restores one. The Manager is a no-op when git is absent; the Log
+	// is the in-session (label, id) history /snapshots renders and /revert reads.
+	snapMgr := snapshot.New(wd, snapshotsDir(home))
+	snapLog := &snapshot.Log{}
+
 	// Session persistence: resolve the session to use (resume / continue / new).
 	sessStore := session.NewStore(sessionsDir(home))
 	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
@@ -275,7 +285,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	return &assembled{
 		client:    client,
 		registry:  registry,
-		commands:  buildCommands(home, wd, registry, bk.models(), models, modes, costTracker, sessStore),
+		commands:  buildCommands(home, wd, registry, bk.models(), models, modes, costTracker, sessStore, snapLog),
 		models:    models,
 		modes:     modes,
 		cost:      costTracker,
@@ -294,12 +304,21 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		initialHistory: initialHistory,
 		saver:          saver,
 		resumeLoad:     resumeLoad,
+
+		snapshots: snapMgr,
+		snaplog:   snapLog,
 	}, nil
 }
 
 // sessionsDir returns the directory where sessions are stored.
 func sessionsDir(home string) string {
 	return filepath.Join(home, ".korai", "sessions")
+}
+
+// snapshotsDir returns the directory where shadow-git snapshot repos are kept,
+// one per worktree (the Manager namespaces by worktree path beneath it).
+func snapshotsDir(home string) string {
+	return filepath.Join(home, ".korai", "snapshots")
 }
 
 // resolveSession picks the session to use: an explicit --resume id, the latest
@@ -377,7 +396,7 @@ func aboutText() string {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore *session.Store) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore *session.Store, snapLog *snapshot.Log) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -396,6 +415,8 @@ func buildCommands(home, wd string, registry *tool.Registry, modelList []string,
 		func() { modes.Set(perm.ModePlan) },
 	))
 	reg.Register(command.NewResumeCommand(func() string { return formatSessions(sessStore, wd) }))
+	reg.Register(command.NewRevertCommand())
+	reg.Register(command.NewSnapshotsCommand(snapLog.Render))
 
 	// Bundled skills first, then discovered skills (which override by name).
 	if builtins, err := skill.Builtins(); err != nil {

@@ -247,6 +247,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		WithModels(sess.models).WithCost(sess.cost).
 		WithFileFinder(sess.fileFinder).WithMentionExpander(sess.mentionExpander).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
+		WithSnapshotter(sess.snapshots, sess.snaplog).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
 	// v2: alt-screen + mouse mode are requested per-frame on the Model's View,
 	// not as NewProgram options.
