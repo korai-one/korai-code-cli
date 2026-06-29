@@ -13,6 +13,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -251,6 +252,75 @@ func (m *Manager) All() map[string][]protocol.Diagnostic {
 		return true
 	})
 	return out
+}
+
+// DiagnoseFile opens path (with the given content), waits up to timeout for the
+// language servers to settle, and returns the rendered <file_diagnostics> block
+// for path alone (no other files). Returns "" when LSP is disabled, no server
+// matches the file, or there are no diagnostics. This backs the on-demand
+// lsp_diagnostics tool.
+func (m *Manager) DiagnoseFile(ctx context.Context, path, content string, timeout time.Duration) string {
+	if !m.Enabled() {
+		return ""
+	}
+	m.Notify(ctx, path, content)
+	m.WaitForDiagnostics(ctx, timeout)
+	return Report(path, m.Diagnostics(path))
+}
+
+// ReferencesText asks the language server for every reference to the symbol at
+// the given 1-based line and column in path (opening it with content first),
+// and renders the results as a sorted list of "path:line:col" lines. It returns
+// "" when LSP is disabled, no server matches, or nothing is found. timeout
+// bounds the request.
+func (m *Manager) ReferencesText(ctx context.Context, path, content string, line, column int, includeDeclaration bool, timeout time.Duration) (string, error) {
+	if !m.Enabled() {
+		return "", nil
+	}
+	clients, err := m.reg.GetClientsForFile(ctx, path)
+	if err != nil || len(clients) == 0 {
+		return "", err
+	}
+	// Open/refresh the document so the server can resolve the position.
+	m.Notify(ctx, path, content)
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// LSP positions are 0-based; the tool takes 1-based line/column.
+	lspLine := line - 1
+	if lspLine < 0 {
+		lspLine = 0
+	}
+	lspChar := column - 1
+	if lspChar < 0 {
+		lspChar = 0
+	}
+
+	var locs []protocol.Location
+	for _, c := range clients {
+		l, rerr := c.FindReferences(ctx, path, lspLine, lspChar, includeDeclaration)
+		if rerr != nil {
+			err = rerr
+			continue
+		}
+		if len(l) > 0 {
+			locs = l
+			err = nil
+			break
+		}
+	}
+	if len(locs) == 0 {
+		return "", err
+	}
+
+	lines := make([]string, 0, len(locs))
+	for _, loc := range locs {
+		p := uriToPath(string(loc.URI))
+		lines = append(lines, fmt.Sprintf("%s:%d:%d", p, loc.Range.Start.Line+1, loc.Range.Start.Character+1))
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n"), nil
 }
 
 // Shutdown stops all running language servers.

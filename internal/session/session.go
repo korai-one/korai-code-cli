@@ -54,32 +54,49 @@ func NewID() string {
 	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
 }
 
-// Store is a directory of session files (one JSONL file per session).
-type Store struct {
+// Store is the persistence boundary callers depend on. It captures the public
+// surface common to every backend (the JSONL FileStore and the SQLiteStore), so
+// call sites can be wired to either implementation. Backend-specific knobs (such
+// as FileStore.WithCodec) are not part of the interface.
+type Store interface {
+	// Save persists r, creating or updating its session.
+	Save(r Record) error
+	// Load returns the session with the given id, or an error wrapping
+	// fs.ErrNotExist if no such session exists.
+	Load(id string) (Record, error)
+	// List returns all saved sessions, most recently updated first.
+	List() ([]Record, error)
+	// Latest returns the most recently updated session for cwd, if any.
+	Latest(cwd string) (Record, bool, error)
+}
+
+// FileStore is a directory of session files (one JSONL file per session). It
+// implements Store.
+type FileStore struct {
 	dir   string
 	codec Codec
 }
 
-// NewStore returns a store rooted at dir, using the plaintext codec. Files are
-// created lazily on Save.
-func NewStore(dir string) *Store { return &Store{dir: dir, codec: PlainCodec{}} }
+// NewFileStore returns a store rooted at dir, using the plaintext codec. Files
+// are created lazily on Save.
+func NewFileStore(dir string) *FileStore { return &FileStore{dir: dir, codec: PlainCodec{}} }
 
 // WithCodec sets the codec used to encode message lines (the seam for at-rest
 // encryption) and returns the store for chaining. The codec's Name is recorded
 // in each file's header so Load can select the matching codec.
-func (s *Store) WithCodec(c Codec) *Store {
+func (s *FileStore) WithCodec(c Codec) *FileStore {
 	if c != nil {
 		s.codec = c
 	}
 	return s
 }
 
-func (s *Store) path(id string) string { return filepath.Join(s.dir, id+fileExt) }
+func (s *FileStore) path(id string) string { return filepath.Join(s.dir, id+fileExt) }
 
 // codecFor returns the codec named in a file header. Plaintext files need no
 // codec; otherwise the store's configured codec must match (you cannot decode
 // what you lack the key for). Future codecs are selected here by name.
-func (s *Store) codecFor(name string) (Codec, error) {
+func (s *FileStore) codecFor(name string) (Codec, error) {
 	if name == "" || name == (PlainCodec{}).Name() {
 		return PlainCodec{}, nil
 	}
@@ -94,7 +111,7 @@ func (s *Store) codecFor(name string) (Codec, error) {
 // after compaction replaces it), the whole file is rewritten from the header.
 // Korai only ever extends or wholesale-replaces history, so a same-or-longer
 // length is treated as an append.
-func (s *Store) Save(r Record) error {
+func (s *FileStore) Save(r Record) error {
 	if err := os.MkdirAll(s.dir, dirPerm); err != nil {
 		return fmt.Errorf("creating session dir: %w", err)
 	}
@@ -112,7 +129,7 @@ func (s *Store) Save(r Record) error {
 // countMessages returns the number of message entries already in the file
 // (total lines minus the header line), or -1 if the file does not exist. It
 // counts newline bytes so arbitrarily long lines are handled.
-func (s *Store) countMessages(path string) (int, error) {
+func (s *FileStore) countMessages(path string) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -141,7 +158,7 @@ func (s *Store) countMessages(path string) (int, error) {
 }
 
 // rewrite truncates the file and writes the header followed by every message.
-func (s *Store) rewrite(path string, r Record) (err error) {
+func (s *FileStore) rewrite(path string, r Record) (err error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, filePerm)
 	if err != nil {
 		return fmt.Errorf("creating session %s: %w", path, err)
@@ -172,7 +189,7 @@ func (s *Store) rewrite(path string, r Record) (err error) {
 }
 
 // appendMessages appends msgs to an existing session file. A no-op for none.
-func (s *Store) appendMessages(path string, msgs []apiclient.Message) (err error) {
+func (s *FileStore) appendMessages(path string, msgs []apiclient.Message) (err error) {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -199,7 +216,7 @@ func (s *Store) appendMessages(path string, msgs []apiclient.Message) (err error
 }
 
 // writeHeader writes the plaintext header line.
-func (s *Store) writeHeader(w *bufio.Writer, r Record) error {
+func (s *FileStore) writeHeader(w *bufio.Writer, r Record) error {
 	data, err := json.Marshal(headerFromRecord(r, s.codec.Name()))
 	if err != nil {
 		return fmt.Errorf("encoding session header: %w", err)
@@ -208,7 +225,7 @@ func (s *Store) writeHeader(w *bufio.Writer, r Record) error {
 }
 
 // writeMessage encodes m through the codec and writes it as one line.
-func (s *Store) writeMessage(w *bufio.Writer, m apiclient.Message) error {
+func (s *FileStore) writeMessage(w *bufio.Writer, m apiclient.Message) error {
 	data, err := json.Marshal(msgToDTO(m))
 	if err != nil {
 		return fmt.Errorf("encoding session message: %w", err)
@@ -229,7 +246,7 @@ func writeLine(w *bufio.Writer, data []byte) error {
 
 // Load reads the session with the given id. Updated is set from the file's
 // modification time.
-func (s *Store) Load(id string) (Record, error) {
+func (s *FileStore) Load(id string) (Record, error) {
 	path := s.path(id)
 	f, err := os.Open(path)
 	if err != nil {
@@ -318,7 +335,7 @@ func decodeMessage(codec Codec, line []byte) (apiclient.Message, error) {
 
 // List returns all saved sessions, most recently modified first. A missing
 // directory yields an empty list (not an error).
-func (s *Store) List() ([]Record, error) {
+func (s *FileStore) List() ([]Record, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -343,7 +360,7 @@ func (s *Store) List() ([]Record, error) {
 }
 
 // Latest returns the most recently modified session for cwd, if any.
-func (s *Store) Latest(cwd string) (Record, bool, error) {
+func (s *FileStore) Latest(cwd string) (Record, bool, error) {
 	records, err := s.List()
 	if err != nil {
 		return Record{}, false, err

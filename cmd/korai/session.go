@@ -28,11 +28,16 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/skill"
 	"github.com/Nevaero/korai-code-cli/internal/snapshot"
+	todostore "github.com/Nevaero/korai-code-cli/internal/todo"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 	"github.com/Nevaero/korai-code-cli/internal/tools"
 	agenttool "github.com/Nevaero/korai-code-cli/internal/tools/agent"
+	checktool "github.com/Nevaero/korai-code-cli/internal/tools/check"
+	diagnosticstool "github.com/Nevaero/korai-code-cli/internal/tools/diagnostics"
 	memtool "github.com/Nevaero/korai-code-cli/internal/tools/memory"
 	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
+	referencestool "github.com/Nevaero/korai-code-cli/internal/tools/references"
+	todotool "github.com/Nevaero/korai-code-cli/internal/tools/todo"
 )
 
 // assembled is the wired-up session: everything the engine needs, plus the
@@ -237,6 +242,13 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	subRegistry := tool.NewRegistry()
 	tools.RegisterAll(subRegistry)
 	subRegistry.Register(memtool.New(store))
+	// RunChecks runs the project's configured verification commands; the LSP
+	// query tools are on-demand reads. All are available to sub-agents too.
+	subRegistry.Register(checktool.New(settings.Checks))
+	if lspMgr.Enabled() {
+		subRegistry.Register(diagnosticstool.New(lspMgr))
+		subRegistry.Register(referencestool.New(lspMgr))
+	}
 
 	var closers []func() error
 	closers = append(closers, func() error { lspMgr.Shutdown(context.Background()); return nil })
@@ -250,6 +262,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		client: client, registry: subRegistry, mode: mode, rules: rules, deps: deps, system: system,
 	}
 	registry.Register(agenttool.New(spawner))
+	// TodoWrite tracks the session's task list; it is a top-level concern, not
+	// something a spawned sub-agent should manage, so it lives in the main set.
+	registry.Register(todotool.New(&todostore.List{}))
 	// ExitPlanMode lives only in the main registry (never the sub-agent set).
 	registry.Register(plantool.New(modes, planApprover))
 
@@ -264,7 +279,15 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	snapLog := &snapshot.Log{}
 
 	// Session persistence: resolve the session to use (resume / continue / new).
-	sessStore := session.NewStore(sessionsDir(home))
+	// Sessions persist to SQLite; if the database cannot be opened, fall back to
+	// the JSONL file store so a storage error never blocks a session.
+	var sessStore session.Store
+	if sq, serr := session.NewSQLiteStore(sessionsDBPath(home)); serr == nil {
+		sessStore = sq
+	} else {
+		slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
+		sessStore = session.NewFileStore(sessionsDir(home))
+	}
 	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
 	saver := func(id string, created time.Time, msgs []apiclient.Message) {
 		if err := sessStore.Save(session.Record{
@@ -310,9 +333,15 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}, nil
 }
 
-// sessionsDir returns the directory where sessions are stored.
+// sessionsDir returns the directory where JSONL sessions are stored (the
+// fallback store).
 func sessionsDir(home string) string {
 	return filepath.Join(home, ".korai", "sessions")
+}
+
+// sessionsDBPath returns the SQLite database file backing sessions.
+func sessionsDBPath(home string) string {
+	return filepath.Join(home, ".korai", "sessions.db")
 }
 
 // snapshotsDir returns the directory where shadow-git snapshot repos are kept,
@@ -324,7 +353,7 @@ func snapshotsDir(home string) string {
 // resolveSession picks the session to use: an explicit --resume id, the latest
 // session for the directory with --continue, or a fresh session otherwise. On
 // any resume failure it logs and falls back to a new session.
-func resolveSession(store *session.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
+func resolveSession(store session.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
 	switch {
 	case opts.resumeID != "":
 		rec, err := store.Load(opts.resumeID)
@@ -341,7 +370,7 @@ func resolveSession(store *session.Store, wd string, opts runOptions) (id string
 }
 
 // formatSessions renders the saved-session list for /resume.
-func formatSessions(store *session.Store, wd string) string {
+func formatSessions(store session.Store, wd string) string {
 	records, err := store.List()
 	if err != nil {
 		return "could not list sessions: " + err.Error()
@@ -396,7 +425,7 @@ func aboutText() string {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore *session.Store, snapLog *snapshot.Log) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore session.Store, snapLog *snapshot.Log) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
