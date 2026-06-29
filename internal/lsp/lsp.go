@@ -171,6 +171,32 @@ func (m *Manager) WaitForDiagnostics(ctx context.Context, timeout time.Duration)
 	}
 }
 
+// ReportAfterChange notifies the language server that path's content changed,
+// waits up to timeout for it to settle, and returns the rendered diagnostics:
+// the <file_diagnostics> block for path plus a <project_diagnostics> block for
+// any OTHER files that now have diagnostics. It returns "" when LSP is disabled
+// or there is nothing to report. This is what file-writing tools append to
+// their result so the model sees its own errors. Implements tool.LSPReporter.
+func (m *Manager) ReportAfterChange(ctx context.Context, path, content string, timeout time.Duration) string {
+	if !m.Enabled() {
+		return ""
+	}
+	m.Notify(ctx, path, content)
+	m.WaitForDiagnostics(ctx, timeout)
+
+	var parts []string
+	if file := Report(path, m.Diagnostics(path)); file != "" {
+		parts = append(parts, file)
+	}
+	if proj := ReportProject(m.All(), path); proj != "" {
+		parts = append(parts, proj)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n\n" + strings.Join(parts, "\n")
+}
+
 // Diagnostics returns the latest diagnostics for path (nil if none/unknown).
 func (m *Manager) Diagnostics(path string) []protocol.Diagnostic {
 	if !m.Enabled() {

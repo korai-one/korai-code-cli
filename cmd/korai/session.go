@@ -20,6 +20,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/hook"
 	"github.com/Nevaero/korai-code-cli/internal/localworker"
+	"github.com/Nevaero/korai-code-cli/internal/lsp"
 	"github.com/Nevaero/korai-code-cli/internal/mcp"
 	"github.com/Nevaero/korai-code-cli/internal/memory"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -201,7 +202,12 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		}
 	}
 
-	deps := tool.Deps{WorkDir: wd}
+	// Language-server diagnostics: enabled unless explicitly disabled in config.
+	// A no-op when no server is on PATH for the edited file, so default-on is
+	// safe. Edit/Write append its output to their result for model self-correction.
+	lspEnabled := settings.LSP == nil || *settings.LSP
+	lspMgr := lsp.New(lspEnabled)
+	deps := tool.Deps{WorkDir: wd, LSP: lspMgr}
 	// The local worker needs no API key; the networked backends read theirs from
 	// the environment via newClient.
 	var client apiclient.Client
@@ -229,6 +235,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	subRegistry.Register(memtool.New(store))
 
 	var closers []func() error
+	closers = append(closers, func() error { lspMgr.Shutdown(context.Background()); return nil })
 	closers = append(closers, connectMCPServers(ctx, settings.MCPServers, subRegistry)...)
 
 	registry := tool.NewRegistry()

@@ -13,12 +13,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/invopop/jsonschema"
 
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
+
+// lspDiagnosticsTimeout bounds how long a write waits for the language server to
+// report diagnostics before returning without them.
+const lspDiagnosticsTimeout = 5 * time.Second
 
 // Input is the structured input for the Edit tool.
 type Input struct {
@@ -149,7 +154,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage, deps tool.Deps)
 		}, nil
 	}
 
-	return tool.Result{
-		Content: fmt.Sprintf("replaced %d occurrence(s) in %s", replaced, path),
-	}, nil
+	out := fmt.Sprintf("replaced %d occurrence(s) in %s", replaced, path)
+	// Append any language-server diagnostics for the edited file so the model
+	// sees compile/type errors it introduced and can fix them this turn.
+	if deps.LSP != nil {
+		out += deps.LSP.ReportAfterChange(ctx, path, updated, lspDiagnosticsTimeout)
+	}
+	return tool.Result{Content: out}, nil
 }
