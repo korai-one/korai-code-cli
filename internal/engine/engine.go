@@ -79,7 +79,8 @@ func (e *Engine) drainSteering(history []apiclient.Message) []apiclient.Message 
 		last := history[n-1]
 		merged := make([]apiclient.ContentBlock, len(last.Content), len(last.Content)+len(blocks))
 		copy(merged, last.Content)
-		last.Content = append(merged, blocks...)
+		merged = append(merged, blocks...)
+		last.Content = merged
 		history[n-1] = last
 		return history
 	}
