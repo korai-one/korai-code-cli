@@ -9,6 +9,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.4
 	github.com/anthropics/anthropic-sdk-go v1.50.2
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260628005914-6eb80f72a239
+	github.com/charmbracelet/x/powernap v0.1.6
 	github.com/coder/websocket v1.8.15
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
@@ -45,12 +46,14 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/oapi-codegen/runtime v1.4.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
+	github.com/sourcegraph/jsonrpc2 v0.2.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
