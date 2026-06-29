@@ -36,19 +36,6 @@ type Symbol struct {
 // reIdent matches a single identifier token used for reference tokenization.
 var reIdent = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
 
-// Per-language definition regexes, compiled once.
-var (
-	rePyDef   = regexp.MustCompile(`^\s*(def|class)\s+(\w+)`)
-	reJSFunc  = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)`)
-	reJSClass = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?class\s+(\w+)`)
-	reJSConst = regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(`)
-	reRustDef = regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(fn|struct|enum|trait|type|const|static)\s+(\w+)`)
-	reJavaDef = regexp.MustCompile(`^\s*(?:public\s+|private\s+|protected\s+|static\s+|final\s+|abstract\s+)*(class|interface|enum)\s+(\w+)`)
-	reRubyDef = regexp.MustCompile(`^\s*(def|class|module)\s+([A-Za-z_]\w*[!?]?)`)
-	reCFunc   = regexp.MustCompile(`^\s*(?:static\s+|inline\s+|extern\s+)*[A-Za-z_][\w\s\*]*?\b(\w+)\s*\([^;]*\)\s*\{`)
-	reCType   = regexp.MustCompile(`^\s*(?:typedef\s+)?(struct|class|enum|union)\s+(\w+)`)
-)
-
 // langOf returns a normalized language tag for the given file extension.
 func langOf(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -87,21 +74,14 @@ func Definitions(path, content string) (syms []Symbol) {
 
 	switch langOf(path) {
 	case "go":
+		// Go uses the standard-library parser (go/ast): precise, fast, and no
+		// cgo for this repo's dominant language.
 		syms = extractGoDefs(path, content)
-	case "py":
-		syms = extractPyDefs(content)
-	case "js":
-		syms = extractJSDefs(content)
-	case "rs":
-		syms = extractRustDefs(content)
-	case "java":
-		syms = extractJavaDefs(content)
-	case "rb":
-		syms = extractRubyDefs(content)
-	case "c", "cpp":
-		syms = extractCDefs(content)
-	default:
+	case "":
 		return nil
+	default:
+		// Every other supported language is parsed with tree-sitter (treesitter.go).
+		syms = tsDefinitions(path, content)
 	}
 	sortSymbols(syms)
 	return syms
@@ -293,165 +273,6 @@ func extractGoDefsRegex(content string) []Symbol {
 	return syms
 }
 
-// --- Python -----------------------------------------------------------------
-
-// extractPyDefs returns def/class definitions from Python source.
-func extractPyDefs(content string) []Symbol {
-	var syms []Symbol
-	for i, line := range splitLines(content) {
-		m := rePyDef.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		kind := KindFunc
-		if m[1] == "class" {
-			kind = KindClass
-		}
-		syms = append(syms, Symbol{
-			Name:     m[2],
-			Kind:     kind,
-			Line:     i + 1,
-			Exported: !strings.HasPrefix(m[2], "_"),
-		})
-	}
-	return syms
-}
-
-// --- JavaScript / TypeScript ------------------------------------------------
-
-// extractJSDefs returns function, class and arrow-function-const definitions
-// from JS/TS source.
-func extractJSDefs(content string) []Symbol {
-	var syms []Symbol
-	for i, line := range splitLines(content) {
-		exported := strings.Contains(line, "export ")
-		switch {
-		case reJSFunc.MatchString(line):
-			m := reJSFunc.FindStringSubmatch(line)
-			syms = append(syms, Symbol{Name: m[1], Kind: KindFunc, Line: i + 1, Exported: exported})
-		case reJSClass.MatchString(line):
-			m := reJSClass.FindStringSubmatch(line)
-			syms = append(syms, Symbol{Name: m[1], Kind: KindClass, Line: i + 1, Exported: exported})
-		case reJSConst.MatchString(line):
-			m := reJSConst.FindStringSubmatch(line)
-			syms = append(syms, Symbol{Name: m[1], Kind: KindFunc, Line: i + 1, Exported: exported})
-		}
-	}
-	return syms
-}
-
-// --- Rust -------------------------------------------------------------------
-
-// extractRustDefs returns fn/struct/enum/trait/type/const definitions from Rust
-// source.
-func extractRustDefs(content string) []Symbol {
-	var syms []Symbol
-	for i, line := range splitLines(content) {
-		m := reRustDef.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		var kind Kind
-		switch m[1] {
-		case "fn":
-			kind = KindFunc
-		case "struct", "enum", "type":
-			kind = KindType
-		case "trait":
-			kind = KindInterface
-		case "const", "static":
-			kind = KindConst
-		default:
-			kind = KindType
-		}
-		syms = append(syms, Symbol{
-			Name:     m[2],
-			Kind:     kind,
-			Line:     i + 1,
-			Exported: strings.Contains(line, "pub "),
-		})
-	}
-	return syms
-}
-
-// --- Java -------------------------------------------------------------------
-
-// extractJavaDefs returns class/interface/enum definitions from Java source.
-func extractJavaDefs(content string) []Symbol {
-	var syms []Symbol
-	for i, line := range splitLines(content) {
-		m := reJavaDef.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		kind := KindClass
-		switch m[1] {
-		case "interface":
-			kind = KindInterface
-		case "enum":
-			kind = KindType
-		}
-		syms = append(syms, Symbol{
-			Name:     m[2],
-			Kind:     kind,
-			Line:     i + 1,
-			Exported: strings.Contains(line, "public "),
-		})
-	}
-	return syms
-}
-
-// --- Ruby -------------------------------------------------------------------
-
-// extractRubyDefs returns def/class/module definitions from Ruby source.
-func extractRubyDefs(content string) []Symbol {
-	var syms []Symbol
-	for i, line := range splitLines(content) {
-		m := reRubyDef.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		kind := KindFunc
-		switch m[1] {
-		case "class", "module":
-			kind = KindClass
-		}
-		syms = append(syms, Symbol{
-			Name:     m[2],
-			Kind:     kind,
-			Line:     i + 1,
-			Exported: !strings.HasPrefix(m[2], "_"),
-		})
-	}
-	return syms
-}
-
-// --- C / C++ ----------------------------------------------------------------
-
-// extractCDefs returns struct/class/enum/union type and function definitions
-// from C/C++ source on a best-effort basis.
-func extractCDefs(content string) []Symbol {
-	var syms []Symbol
-	for i, line := range splitLines(content) {
-		if m := reCType.FindStringSubmatch(line); m != nil {
-			kind := KindType
-			if m[1] == "class" {
-				kind = KindClass
-			}
-			syms = append(syms, Symbol{Name: m[2], Kind: kind, Line: i + 1, Exported: true})
-			continue
-		}
-		if m := reCFunc.FindStringSubmatch(line); m != nil {
-			name := m[1]
-			if _, bad := cKeywords[name]; bad {
-				continue
-			}
-			syms = append(syms, Symbol{Name: name, Kind: KindFunc, Line: i + 1, Exported: true})
-		}
-	}
-	return syms
-}
-
 // --- helpers ----------------------------------------------------------------
 
 // splitLines splits content into lines without retaining the newline runes.
@@ -538,8 +359,4 @@ var (
 		for if impl in let loop match mod move mut pub ref return self Self static struct
 		super trait true type unsafe use where while bool char str String Vec Option Some
 		None Result Ok Err usize isize u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 println print`)
-
-	cKeywords = toSet(`if else for while do switch case default return break continue sizeof
-		typedef struct union enum const static extern inline void int char float double
-		long short unsigned signed bool true false`)
 )
