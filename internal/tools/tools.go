@@ -14,6 +14,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/tools/glob"
 	"github.com/Nevaero/korai-code-cli/internal/tools/grep"
 	"github.com/Nevaero/korai-code-cli/internal/tools/readfile"
+	"github.com/Nevaero/korai-code-cli/internal/tools/repomap"
 	"github.com/Nevaero/korai-code-cli/internal/tools/webfetch"
 	"github.com/Nevaero/korai-code-cli/internal/tools/websearch"
 	"github.com/Nevaero/korai-code-cli/internal/tools/write"
@@ -28,6 +29,7 @@ func RegisterAll(r *tool.Registry) {
 	r.Register(bash.New())
 	r.Register(grep.New())
 	r.Register(glob.New())
+	r.Register(repomap.New())
 	r.Register(webfetch.New())
 	r.Register(websearch.New())
 }
