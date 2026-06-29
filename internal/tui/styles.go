@@ -1,11 +1,11 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // The palette is a blue→purple scheme (Tokyo Night-ish): blue for the user and
 // accents, purple for tool activity and the active selection, soft lavender for
 // assistant text. Hex colors degrade gracefully on 256-color terminals.
-const (
+var (
 	colBlue     = lipgloss.Color("#7AA2F7") // primary accent (user, prompts)
 	colPurple   = lipgloss.Color("#BB9AF7") // tool activity, selection
 	colLavender = lipgloss.Color("#C0CAF5") // assistant body text

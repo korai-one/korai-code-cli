@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
@@ -142,8 +142,12 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 	ti := textinput.New()
 	ti.Placeholder = "Ask Korai…"
 	ti.Prompt = "› "
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(colBlue).Bold(true)
-	ti.Cursor.Style = lipgloss.NewStyle().Foreground(colPurple)
+	tiStyles := textinput.DefaultStyles(true)
+	promptStyle := lipgloss.NewStyle().Foreground(colBlue).Bold(true)
+	tiStyles.Focused.Prompt = promptStyle
+	tiStyles.Blurred.Prompt = promptStyle
+	tiStyles.Cursor.Color = colPurple
+	ti.SetStyles(tiStyles)
 	ti.Focus()
 
 	sp := spinner.New()
@@ -268,7 +272,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.onResize(msg)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.onKey(msg)
 	case tea.MouseMsg:
 		// Mouse-wheel scrolling of the transcript; the viewport ignores other
@@ -360,13 +364,13 @@ func entriesFromMessages(msgs []apiclient.Message) []entry {
 func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
-	m.input.Width = msg.Width - 4
+	m.input.SetWidth(msg.Width - 4)
 
 	if !m.ready {
-		m.viewport = viewport.New(msg.Width, 1)
+		m.viewport = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(1))
 		m.ready = true
 	} else {
-		m.viewport.Width = msg.Width
+		m.viewport.SetWidth(msg.Width)
 	}
 	// Rebuild the markdown renderer to wrap at the new width. Cached per-entry
 	// renders at the old width are invalidated lazily via renderedWidth.
@@ -448,10 +452,10 @@ func (m *Model) relayout() {
 	if h < 1 {
 		h = 1
 	}
-	m.viewport.Height = h
+	m.viewport.SetHeight(h)
 }
 
-func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		if m.cancel != nil {
 			m.cancel()
@@ -487,7 +491,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Shift+Tab cycles the permission mode (default → acceptEdits → plan). The
 	// current mode is shown by the badge above the input, so cycling does not
 	// post a message into the transcript.
-	if msg.Type == tea.KeyShiftTab && m.modes != nil {
+	if msg.String() == "shift+tab" && m.modes != nil {
 		m.modes.Cycle()
 		m.relayout() // the badge may appear or disappear
 		m.refreshViewport()
@@ -532,7 +536,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.Type == tea.KeyEnter {
+	if msg.String() == "enter" {
 		return m.submit()
 	}
 
@@ -547,7 +551,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ctrl+p/n) cycle the selection with wrap-around, tab completes the name and
 // leaves the cursor ready for arguments, enter accepts and runs it, esc
 // dismisses the menu. It reports whether it consumed the key.
-func (m Model) onMenuKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+func (m Model) onMenuKey(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	n := len(m.menu)
 	switch msg.String() {
 	case "up", "ctrl+p":
@@ -616,7 +620,7 @@ func (m Model) acceptMenu() (tea.Model, tea.Cmd) {
 // page (pgup/pgdown) and line (shift+↑/↓) scrolling are claimed here; the mouse
 // wheel scrolls too (handled in Update). It takes a pointer so the scroll
 // position sticks.
-func (m *Model) handleScroll(msg tea.KeyMsg) bool {
+func (m *Model) handleScroll(msg tea.KeyPressMsg) bool {
 	switch msg.String() {
 	case "pgup":
 		m.viewport.PageUp()
@@ -652,7 +656,7 @@ func (m *Model) exitSearch() {
 // onSearchKey handles keys while the input is a find box: esc exits, enter and
 // ctrl+n/↓ jump to the next match, ctrl+p/↑ to the previous, and any other key
 // edits the query and re-runs the search.
-func (m Model) onSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.exitSearch()
@@ -702,7 +706,7 @@ var permOptions = []string{
 
 // onDialogKey drives the permission dialog: ↑/↓ (and ctrl+p/n) move the
 // selection, enter activates it, esc denies.
-func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "ctrl+p":
 		m.dialogChoice = (m.dialogChoice - 1 + len(permOptions)) % len(permOptions)
@@ -752,7 +756,7 @@ var planOptions = []string{
 
 // onPlanKey drives the plan-approval dialog: ↑/↓ (and ctrl+p/n) move the
 // selection, enter activates it, esc keeps planning without feedback.
-func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onPlanKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "ctrl+p":
 		m.planChoice = (m.planChoice - 1 + len(planOptions)) % len(planOptions)
@@ -783,7 +787,7 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // onPlanFeedbackKey handles the "keep planning" feedback box: enter sends the
 // feedback with a reject, esc cancels back to the dialog.
-func (m Model) onPlanFeedbackKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onPlanFeedbackKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		feedback := strings.TrimSpace(m.input.Value())
@@ -1038,7 +1042,7 @@ func parseEditChange(name string, input json.RawMessage) *editChange {
 
 // diffWidth is the width available for a diff block, accounting for its indent.
 func (m Model) diffWidth() int {
-	w := m.viewport.Width - 4
+	w := m.viewport.Width() - 4
 	if w < 20 {
 		w = 20
 	}
@@ -1069,7 +1073,7 @@ func (m *Model) renderEntries() string {
 	if len(m.entries) == 0 {
 		return m.welcomeView()
 	}
-	w := m.viewport.Width
+	w := m.viewport.Width()
 	m.entryOffsets = make([]int, len(m.entries))
 	var b strings.Builder
 	line := 0
@@ -1145,8 +1149,18 @@ func (m *Model) assistantText(i, w int) string {
 	return m.styles.assistant.Width(w).Render(e.text)
 }
 
-// View renders the current frame.
-func (m Model) View() string {
+// View renders the current frame. Bubble Tea v2 reads the alt-screen and mouse
+// mode off the returned View each frame (they are no longer NewProgram
+// options), so they are requested here.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+// render builds the transcript + input frame as a styled string.
+func (m Model) render() string {
 	if m.quitting {
 		return ""
 	}
@@ -1364,14 +1378,14 @@ func (m Model) renderPlanDialog() string {
 		b.WriteByte('\n')
 	}
 	b.WriteString(m.styles.status.Render("↑/↓ select · enter confirm · esc keep planning"))
-	return m.styles.dialog.Width(m.viewport.Width).Render(b.String())
+	return m.styles.dialog.Width(m.viewport.Width()).Render(b.String())
 }
 
 // renderPlanFeedback shows the "keep planning" feedback box.
 func (m Model) renderPlanFeedback() string {
 	body := "Keep planning — tell the agent what to change:\n\n" + m.input.View() +
 		"\n\nenter to send · esc to skip"
-	return m.styles.dialog.Width(m.viewport.Width).Render(body)
+	return m.styles.dialog.Width(m.viewport.Width()).Render(body)
 }
 
 // oneLine collapses content to a single trimmed line, truncated for display.
