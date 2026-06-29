@@ -251,7 +251,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 
 	var closers []func() error
-	closers = append(closers, func() error { lspMgr.Shutdown(context.Background()); return nil })
+	// Teardown must stop the servers even if the session context is already
+	// cancelled, so it intentionally uses a fresh context.
+	closers = append(closers, func() error { lspMgr.Shutdown(context.Background()); return nil }) //nolint:contextcheck
 	closers = append(closers, connectMCPServers(ctx, settings.MCPServers, subRegistry)...)
 
 	registry := tool.NewRegistry()
@@ -275,14 +277,14 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	// Shadow-git snapshots: a worktree checkpoint is taken before each turn and
 	// /revert restores one. The Manager is a no-op when git is absent; the Log
 	// is the in-session (label, id) history /snapshots renders and /revert reads.
-	snapMgr := snapshot.New(wd, snapshotsDir(home))
+	snapMgr := snapshot.New(ctx, wd, snapshotsDir(home))
 	snapLog := &snapshot.Log{}
 
 	// Session persistence: resolve the session to use (resume / continue / new).
 	// Sessions persist to SQLite; if the database cannot be opened, fall back to
 	// the JSONL file store so a storage error never blocks a session.
 	var sessStore session.Store
-	if sq, serr := session.NewSQLiteStore(sessionsDBPath(home)); serr == nil {
+	if sq, serr := session.NewSQLiteStore(ctx, sessionsDBPath(home)); serr == nil {
 		sessStore = sq
 	} else {
 		slog.Warn("opening sqlite session store; falling back to file store", "error", serr)

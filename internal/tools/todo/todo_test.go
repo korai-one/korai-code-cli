@@ -18,7 +18,7 @@ func TestExecuteSuccess(t *testing.T) {
 
 	list := &store.List{}
 	rt := todotool.New(list)
-	in, _ := json.Marshal(todotool.Input{Todos: []todotool.TodoInput{
+	in, _ := json.Marshal(todotool.Input{Todos: []todotool.Entry{
 		{Content: "Write code", Status: "completed"},
 		{Content: "Run tests", Status: "in_progress", ActiveForm: "Running tests"},
 		{Content: "Ship it", Status: "pending"},
@@ -53,7 +53,7 @@ func TestExecuteInvalidStatus(t *testing.T) {
 
 	list := &store.List{}
 	rt := todotool.New(list)
-	in, _ := json.Marshal(todotool.Input{Todos: []todotool.TodoInput{
+	in, _ := json.Marshal(todotool.Input{Todos: []todotool.Entry{
 		{Content: "Do a thing", Status: "done"},
 	}})
 

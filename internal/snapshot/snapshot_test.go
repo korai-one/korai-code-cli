@@ -20,7 +20,7 @@ func newManager(t *testing.T) (*Manager, string) {
 	}
 	worktree := t.TempDir()
 	dataDir := t.TempDir()
-	m := New(worktree, dataDir)
+	m := New(context.Background(), worktree, dataDir)
 	if !m.Enabled() {
 		t.Skip("git not available")
 	}
@@ -217,7 +217,7 @@ func TestDisabledManagerNoOp(t *testing.T) {
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	m := New(f, t.TempDir())
+	m := New(context.Background(), f, t.TempDir())
 	if m.Enabled() {
 		t.Fatal("expected disabled Manager for a file worktree")
 	}

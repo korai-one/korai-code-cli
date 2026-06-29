@@ -83,7 +83,7 @@ type Manager struct {
 // git is not on PATH, or the worktree path is unusable, or the shadow
 // repository cannot be initialised, the returned Manager is disabled and every
 // method is a safe no-op so callers never need to branch on availability.
-func New(worktree, dataDir string) *Manager {
+func New(ctx context.Context, worktree, dataDir string) *Manager {
 	m := &Manager{}
 
 	abs, err := filepath.Abs(worktree)
@@ -102,7 +102,7 @@ func New(worktree, dataDir string) *Manager {
 	sum := sha256.Sum256([]byte(abs))
 	m.gitDir = filepath.Join(dataDir, hex.EncodeToString(sum[:])[:16])
 
-	if err := m.init(context.Background()); err != nil {
+	if err := m.init(ctx); err != nil {
 		m.gitDir = ""
 		return m
 	}

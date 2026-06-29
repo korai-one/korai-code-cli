@@ -161,9 +161,11 @@ func (b *Builder) extractAll(ctx context.Context, paths []string) ([]fileInfo, e
 			}
 			content := string(data)
 			infos[i] = fileInfo{
-				rel:  rel,
-				defs: Definitions(rel, content),
-				refs: References(rel, content),
+				rel: rel,
+				// Extraction is pure CPU-bound parsing (go/ast and tree-sitter);
+				// there is no I/O to cancel, so threading ctx adds no value here.
+				defs: Definitions(rel, content), //nolint:contextcheck
+				refs: References(rel, content),  //nolint:contextcheck
 			}
 			return nil
 		})

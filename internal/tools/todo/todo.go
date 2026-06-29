@@ -24,11 +24,11 @@ import (
 // complete list on every call; the tool replaces the existing list with it.
 type Input struct {
 	// Todos is the full task list to store, replacing any previous list.
-	Todos []TodoInput `json:"todos" jsonschema:"required,description=The complete task list, replacing the previous list. Pass every task on each call."`
+	Todos []Entry `json:"todos" jsonschema:"required,description=The complete task list, replacing the previous list. Pass every task on each call."`
 }
 
-// TodoInput is one task in the TodoWrite input.
-type TodoInput struct {
+// Entry is one task in the TodoWrite input.
+type Entry struct {
 	// Content is the task description in imperative form (e.g. "Run tests").
 	Content string `json:"content" jsonschema:"required,description=The task description"`
 	// Status is one of pending, in_progress, or completed.

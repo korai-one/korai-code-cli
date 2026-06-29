@@ -131,14 +131,15 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage, deps tool.Deps)
 				return tool.Result{Content: fmt.Sprintf("cannot write %s: %v", r.Path, err), IsError: true}, nil
 			}
 			// A move renames: drop the old path once the new one is written.
-			if r.OldPath != "" && r.OldPath != r.Path {
+			switch {
+			case r.OldPath != "" && r.OldPath != r.Path:
 				if err := os.Remove(t.abs(deps, r.OldPath)); err != nil && !os.IsNotExist(err) {
 					return tool.Result{Content: fmt.Sprintf("cannot remove moved-from %s: %v", r.OldPath, err), IsError: true}, nil
 				}
 				summary = append(summary, fmt.Sprintf("moved %s -> %s", r.OldPath, r.Path))
-			} else if r.Op == patch.OpAdd {
+			case r.Op == patch.OpAdd:
 				summary = append(summary, "added "+r.Path)
-			} else {
+			default:
 				summary = append(summary, "updated "+r.Path)
 			}
 			changed[abs] = r.Content

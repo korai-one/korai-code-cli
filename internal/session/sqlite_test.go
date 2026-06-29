@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -18,7 +19,7 @@ import (
 func newSQLiteStore(t *testing.T) *session.SQLiteStore {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "sessions.db")
-	store, err := session.NewSQLiteStore(path)
+	store, err := session.NewSQLiteStore(context.Background(), path)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestSQLiteListAndLatest(t *testing.T) {
 func TestSQLiteCodecRoundTrip(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "sessions.db")
-	store, err := session.NewSQLiteStore(path)
+	store, err := session.NewSQLiteStore(context.Background(), path)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestSQLiteCodecRoundTrip(t *testing.T) {
 	_ = store.Close()
 
 	// A store without the codec cannot decode the encrypted row.
-	plain, err := session.NewSQLiteStore(path)
+	plain, err := session.NewSQLiteStore(context.Background(), path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

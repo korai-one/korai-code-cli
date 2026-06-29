@@ -53,7 +53,7 @@ type SQLiteStore struct {
 // schema migration. The parent directory is created 0700 and the database file
 // is the user's private session data. The returned store uses the plaintext
 // codec; call WithCodec to change it.
-func NewSQLiteStore(path string) (*SQLiteStore, error) {
+func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return nil, fmt.Errorf("creating session dir: %w", err)
 	}
@@ -68,7 +68,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("securing session db %s: %w", path, cerr)
 		}
 	}
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrating session db %s: %w", path, err)
 	}
