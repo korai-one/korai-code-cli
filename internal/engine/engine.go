@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -38,6 +39,51 @@ type Engine struct {
 	compactFn  CompactFunc
 	compactMax int
 	estimate   func([]apiclient.Message) int
+
+	// steerMu guards steer: user text injected mid-turn (see Enqueue), drained
+	// into history at the top of each tool-loop iteration.
+	steerMu sync.Mutex
+	steer   []string
+}
+
+// Enqueue adds user-typed text to be folded into the running turn at the next
+// tool-loop iteration ("mid-turn steering"). It is safe to call concurrently
+// with Run and is a no-op for blank text. If no turn is running, the text is
+// consumed at the start of the next Run.
+func (e *Engine) Enqueue(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	e.steerMu.Lock()
+	e.steer = append(e.steer, text)
+	e.steerMu.Unlock()
+}
+
+// drainSteering folds any queued steering text into history before the next
+// model call. To keep message roles valid it appends to a trailing user message
+// (e.g. fresh tool results) when there is one, otherwise adds a new user turn.
+// It copies the trailing message's blocks rather than mutating the caller's slice.
+func (e *Engine) drainSteering(history []apiclient.Message) []apiclient.Message {
+	e.steerMu.Lock()
+	pending := e.steer
+	e.steer = nil
+	e.steerMu.Unlock()
+	if len(pending) == 0 {
+		return history
+	}
+	blocks := make([]apiclient.ContentBlock, 0, len(pending))
+	for _, t := range pending {
+		blocks = append(blocks, apiclient.TextBlock{Text: t})
+	}
+	if n := len(history); n > 0 && history[n-1].Role == apiclient.RoleUser {
+		last := history[n-1]
+		merged := make([]apiclient.ContentBlock, len(last.Content), len(last.Content)+len(blocks))
+		copy(merged, last.Content)
+		last.Content = append(merged, blocks...)
+		history[n-1] = last
+		return history
+	}
+	return append(history, apiclient.Message{Role: apiclient.RoleUser, Content: blocks})
 }
 
 // CompactFunc summarizes a conversation into a shorter one. It is the seam the
@@ -140,6 +186,8 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	history = e.maybeCompact(ctx, history, ch)
 
 	for {
+		// Fold in any text the user typed mid-turn before building the request.
+		history = e.drainSteering(history)
 		req := e.buildRequest(ctx, history, system)
 		turn, err := e.streamTurn(ctx, req, ch)
 		if err != nil {

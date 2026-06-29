@@ -341,6 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnDoneMsg:
 		m.busy = false
 		m.streaming = false
+		m.input.Placeholder = "Ask Korai…"
 		return m, nil
 	case resumeLoadedMsg:
 		if msg.err != nil {
@@ -448,8 +449,12 @@ func (m Model) bottomHeight() int {
 		return lineCount(m.renderPlanDialog())
 	case m.pending != nil:
 		return lineCount(m.renderDialog())
-	case m.searching, m.busy:
+	case m.searching:
 		return 1
+	case m.busy:
+		// While busy the input stays visible (spinner prefixes it) so the user
+		// can compose a mid-turn steer; its height matches the idle input.
+		return lineCount(m.inputView())
 	default:
 		return lineCount(m.inputView())
 	}
@@ -533,9 +538,25 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.busy {
-		if msg.String() == "esc" && m.cancel != nil {
-			m.cancel()
-			m.addEntry(kindInfo, "interrupted")
+		// While the agent runs: esc interrupts, enter queues the typed text as a
+		// mid-turn steer, and any other key edits the (still-visible) input.
+		switch msg.String() {
+		case "esc":
+			if m.cancel != nil {
+				m.cancel()
+				m.addEntry(kindInfo, "interrupted")
+			}
+		case "enter":
+			if v := strings.TrimSpace(m.input.Value()); v != "" {
+				m.runner.Enqueue(v)
+				m.input.Reset()
+				m.addEntry(kindUser, v)
+				m.refreshViewport()
+			}
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -1063,6 +1084,7 @@ func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
 	ch := m.runner.Run(ctx, m.history, m.system)
 	m.busy = true
 	m.streaming = false
+	m.input.Placeholder = "steer the agent… (enter to queue · esc to interrupt)"
 
 	cmds := []tea.Cmd{waitForEvent(ch), m.spinner.Tick}
 	// Checkpoint the worktree before the turn's edits land, so /revert can undo
@@ -1283,7 +1305,8 @@ func (m Model) render() string {
 	case m.searching:
 		bottom = m.renderSearch()
 	case m.busy:
-		bottom = m.spinner.View() + " working… (esc to interrupt)"
+		// Spinner inline-prefixes the input so a steer can be typed while busy.
+		bottom = m.spinner.View() + " " + m.inputView()
 	default:
 		bottom = m.inputView()
 	}

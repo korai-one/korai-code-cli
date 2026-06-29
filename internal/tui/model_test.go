@@ -37,6 +37,8 @@ func (f fakeRunner) Run(_ context.Context, _ []apiclient.Message, _ string) <-ch
 	return ch
 }
 
+func (f fakeRunner) Enqueue(string) {}
+
 // ready returns a model sized so the viewport is initialized.
 func ready(r Runner) Model {
 	m := New(r, NewAsker(), "system", testCommands())
