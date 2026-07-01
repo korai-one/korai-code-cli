@@ -11,12 +11,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/invopop/jsonschema"
 
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
+
+// lspDiagnosticsTimeout bounds how long a write waits for the language server to
+// report diagnostics before returning without them.
+const lspDiagnosticsTimeout = 5 * time.Second
 
 // Input is the structured input for the Write tool.
 type Input struct {
@@ -106,5 +111,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage, deps tool.Deps)
 		}, nil
 	}
 
-	return tool.Result{Content: fmt.Sprintf("wrote %d bytes to %s", len(data), path)}, nil
+	content := fmt.Sprintf("wrote %d bytes to %s", len(data), path)
+	// Append any language-server diagnostics for the written file so the model
+	// sees compile/type errors it introduced and can fix them this turn.
+	if deps.LSP != nil {
+		content += deps.LSP.ReportAfterChange(ctx, path, string(data), lspDiagnosticsTimeout)
+	}
+	return tool.Result{Content: content}, nil
 }

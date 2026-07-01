@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
@@ -13,8 +13,8 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 )
 
-func keyRunes(s string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+func keyRunes(s string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Text: s}
 }
 
 // TestBackslashContinuation accumulates a multi-line prompt across submits.
@@ -23,7 +23,7 @@ func TestBackslashContinuation(t *testing.T) {
 	m := ready(fakeRunner{})
 
 	m.input.SetValue(`line1\`)
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.draft != "line1\n" {
 		t.Fatalf("draft = %q, want %q", m.draft, "line1\n")
@@ -33,7 +33,7 @@ func TestBackslashContinuation(t *testing.T) {
 	}
 
 	m.input.SetValue("line2")
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.draft != "" {
 		t.Errorf("draft should clear after submit, got %q", m.draft)
@@ -56,8 +56,8 @@ func TestInputHistoryNavigation(t *testing.T) {
 	m.inputHist.add("first")
 	m.inputHist.add("second")
 
-	up := func() { tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp}); m = tm.(Model) }
-	down := func() { tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown}); m = tm.(Model) }
+	up := func() { tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyUp}); m = tm.(Model) }
+	down := func() { tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown}); m = tm.(Model) }
 
 	up()
 	if m.input.Value() != "second" {
@@ -98,12 +98,12 @@ func TestPermissionAllowForSession(t *testing.T) {
 	pr := permRequest{req: perm.Request{ToolName: "Bash"}, reply: make(chan perm.Decision, 1)}
 	m.pending = &pr
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown}) // select "Allow for session"
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // select "Allow for session"
 	m = tm.(Model)
 	if m.dialogChoice != 1 {
 		t.Fatalf("one down should select option 1, got %d", m.dialogChoice)
 	}
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.pending != nil {
 		t.Error("dialog should close after a decision")
@@ -163,12 +163,12 @@ func TestSearchModeEnterExit(t *testing.T) {
 	t.Parallel()
 	m := ready(fakeRunner{})
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	m = tm.(Model)
 	if !m.searching {
 		t.Fatal("ctrl+f should enter search mode")
 	}
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = tm.(Model)
 	if m.searching {
 		t.Error("esc should exit search mode")
@@ -185,7 +185,7 @@ func TestArgHintLoneSlashNoPanic(t *testing.T) {
 		t.Errorf("argHint(%q) = %q, want empty", "/", got)
 	}
 	// View must not panic and must render something.
-	if v := m.View(); v == "" {
+	if v := m.View().Content; v == "" {
 		t.Error("View returned empty with a lone slash")
 	}
 }
@@ -211,14 +211,14 @@ func TestViewportLeavesRoomForChrome(t *testing.T) {
 	m = tm.(Model)
 
 	// relayout reserves the chrome plus one safety line.
-	if got, want := m.viewport.Height, 24-m.chromeLines()-1; got != want {
+	if got, want := m.viewport.Height(), 24-m.chromeLines()-1; got != want {
 		t.Errorf("viewport height = %d, want %d (24 - %d chrome - 1 safety)", got, want, m.chromeLines())
 	}
-	if m.viewport.Height >= 24 {
-		t.Errorf("viewport height %d leaves no room for chrome", m.viewport.Height)
+	if m.viewport.Height() >= 24 {
+		t.Errorf("viewport height %d leaves no room for chrome", m.viewport.Height())
 	}
 	// The full frame must fit within the terminal height.
-	if lines := strings.Count(m.View(), "\n") + 1; lines > 24 {
+	if lines := strings.Count(m.View().Content, "\n") + 1; lines > 24 {
 		t.Errorf("frame is %d lines, overflows the 24-row terminal", lines)
 	}
 }
@@ -255,7 +255,7 @@ func TestPlanCommandWithTask(t *testing.T) {
 	m = tm.(Model)
 
 	m.input.SetValue("/plan add a cache layer")
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if modes.Get() != perm.ModePlan {
@@ -305,12 +305,12 @@ func TestMenuNavigationWraps(t *testing.T) {
 	m = tm.(Model)
 	n := len(m.menu)
 
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp}) // wrap to last
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp}) // wrap to last
 	m = tm.(Model)
 	if m.menuIdx != n-1 {
 		t.Errorf("up from 0 = %d, want %d (wrap to last)", m.menuIdx, n-1)
 	}
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // wrap to first
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // wrap to first
 	m = tm.(Model)
 	if m.menuIdx != 0 {
 		t.Errorf("down from last = %d, want 0 (wrap to first)", m.menuIdx)
@@ -326,7 +326,7 @@ func TestMenuTabCompletes(t *testing.T) {
 	tm, _ = m.Update(keyRunes("c")) // narrow to c* commands
 	m = tm.(Model)
 	want := "/" + m.menu[m.menuIdx].Name() + " "
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = tm.(Model)
 	if m.input.Value() != want {
 		t.Errorf("after tab input = %q, want %q", m.input.Value(), want)
@@ -349,7 +349,7 @@ func TestMenuEnterRunsCommand(t *testing.T) {
 	if len(m.menu) == 0 {
 		t.Fatal("menu should be open on /clear")
 	}
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if len(m.entries) != 0 {
 		t.Errorf("/clear via menu should empty the transcript, got %d entries", len(m.entries))
@@ -362,7 +362,7 @@ func TestMenuEscDismisses(t *testing.T) {
 	m := ready(fakeRunner{})
 	tm, _ := m.Update(keyRunes("/"))
 	m = tm.(Model)
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = tm.(Model)
 	if len(m.menu) != 0 {
 		t.Error("esc should dismiss the menu")
@@ -382,7 +382,7 @@ func TestSearchMatchesEntries(t *testing.T) {
 	m.addEntry(kindAssistant, "alpha")
 	m.addEntry(kindAssistant, "bravo")
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	m = tm.(Model)
 	tm, _ = m.Update(keyRunes("a"))
 	m = tm.(Model)

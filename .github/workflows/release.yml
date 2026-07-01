@@ -5,6 +5,11 @@ name: Release
 # KORAI_BINARY_URL at the "latest release" asset:
 #   https://github.com/korai-one/korai-code-cli/releases/latest/download/korai-linux-amd64
 #
+# The binary embeds tree-sitter grammars (cgo), so each target is built on its
+# own native runner with a native C compiler — no cross-compilation. One target
+# per OS: linux/amd64 (Kode sandbox), darwin/arm64 (Apple Silicon CLI), and
+# windows/amd64 (CLI + desktop sidecar).
+#
 # Triggers:
 #   - push to main (Go sources changed): auto-bump the patch version and release.
 #   - workflow_dispatch: release an explicit version (e.g. v0.2.0) on demand.
@@ -32,9 +37,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: tag & publish
+  version:
+    name: determine version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,53 +66,81 @@ jobs:
           echo "version=$next" >> "$GITHUB_OUTPUT"
           echo "Releasing $next"
 
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-latest, goos: linux, goarch: amd64, ext: "" }
+          - { os: macos-latest, goos: darwin, goarch: arm64, ext: "" }
+          - { os: windows-latest, goos: windows, goarch: amd64, ext: ".exe" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.26"
           cache: true
 
-      - name: Build binaries
-        # Pure-Go (CGO disabled), so every target cross-compiles from the linux
-        # runner with no extra toolchain. Linux feeds the Kode sandbox; darwin
-        # and windows cover the CLI and the desktop sidecar.
+      - name: Build binary
+        # cgo on, built natively (runner OS/arch == target), so the bundled C
+        # tree-sitter grammars compile and link with the platform's own toolchain
+        # (gcc on the linux/windows images, clang on macOS) — no cross toolchain.
+        shell: bash
         env:
-          CGO_ENABLED: "0"
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          v="${{ steps.ver.outputs.version }}"
-          build() {
-            local goos="$1" goarch="$2" ext="$3"
-            local out="korai-${goos}-${goarch}${ext}"
-            GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-              -ldflags "-s -w -X main.version=${v}" -o "${out}" ./cmd/korai
-            sha256sum "${out}" > "${out}.sha256"
-          }
-          build linux   amd64 ""
-          build linux   arm64 ""
-          build darwin  amd64 ""
-          build darwin  arm64 ""
-          build windows amd64 .exe
-          build windows arm64 .exe
+          v="${{ needs.version.outputs.version }}"
+          out="korai-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w -X main.version=${v}" -o "${out}" ./cmd/korai
+          go version
+          echo "built ${out}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: korai-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: korai-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  publish:
+    name: tag & publish
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true # flatten all artifacts into dist/
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          for f in korai-*; do
+            case "$f" in *.sha256) continue;; esac
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -la
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           # Creates the tag at this commit (a GITHUB_TOKEN-created tag does not
           # re-trigger this workflow, so there is no loop).
-          tag_name: ${{ steps.ver.outputs.version }}
-          name: ${{ steps.ver.outputs.version }}
+          tag_name: ${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.version }}
           make_latest: true # so releases/latest/download/<asset> serves this
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            korai-linux-amd64
-            korai-linux-amd64.sha256
-            korai-linux-arm64
-            korai-linux-arm64.sha256
-            korai-darwin-amd64
-            korai-darwin-amd64.sha256
-            korai-darwin-arm64
-            korai-darwin-arm64.sha256
-            korai-windows-amd64.exe
-            korai-windows-amd64.exe.sha256
-            korai-windows-arm64.exe
-            korai-windows-arm64.exe.sha256
+            dist/korai-linux-amd64
+            dist/korai-linux-amd64.sha256
+            dist/korai-darwin-arm64
+            dist/korai-darwin-arm64.sha256
+            dist/korai-windows-amd64.exe
+            dist/korai-windows-amd64.exe.sha256

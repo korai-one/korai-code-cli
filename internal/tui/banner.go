@@ -2,9 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // koraiBanner is the "KORAI" wordmark in the ANSI Shadow block style, shown on
@@ -21,8 +22,9 @@ var koraiBanner = []string{
 
 // bannerGradient tints the banner rows from blue at the top to purple at the
 // bottom (one color per row).
-var bannerGradient = []lipgloss.Color{
-	"#6AA0FF", "#7E94FF", "#9288FB", "#A37CF7", "#B06BF3", "#BB9AF7",
+var bannerGradient = []color.Color{
+	lipgloss.Color("#6AA0FF"), lipgloss.Color("#7E94FF"), lipgloss.Color("#9288FB"),
+	lipgloss.Color("#A37CF7"), lipgloss.Color("#B06BF3"), lipgloss.Color("#BB9AF7"),
 }
 
 // welcomeView renders the start-up screen: the gradient KORAI wordmark, a
@@ -32,8 +34,8 @@ func (m Model) welcomeView() string {
 	var b strings.Builder
 	b.WriteByte('\n')
 	for i, row := range koraiBanner {
-		color := bannerGradient[i%len(bannerGradient)]
-		b.WriteString("  " + lipgloss.NewStyle().Foreground(color).Bold(true).Render(row))
+		rowColor := bannerGradient[i%len(bannerGradient)]
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(rowColor).Bold(true).Render(row))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')

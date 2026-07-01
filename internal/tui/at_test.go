@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 )
@@ -107,7 +107,7 @@ func TestAtMenuAcceptInsertsPath(t *testing.T) {
 	if len(m.atItems) == 0 {
 		t.Fatal("@menu should match a file")
 	}
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if want := "@internal/tui/menu.go "; m.input.Value() != want {
 		t.Errorf("after accept input = %q, want %q", m.input.Value(), want)
@@ -125,7 +125,7 @@ func TestMentionExpansionOnSubmit(t *testing.T) {
 	m.mentionExpander = func(s string) string { return s + " [expanded]" }
 
 	m.input.SetValue("look at @x")
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	// Transcript keeps the typed text.

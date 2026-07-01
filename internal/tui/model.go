@@ -10,20 +10,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
+	"github.com/Nevaero/korai-code-cli/internal/snapshot"
 	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
 )
 
@@ -91,6 +93,7 @@ type Model struct {
 	// are injected so the model does no filesystem I/O itself.
 	fileFinder      func() []string
 	mentionExpander func(string) string
+	imageAttacher   func(string) []apiclient.ImageBlock
 
 	search    transcriptSearch // transcript find state (ctrl+f)
 	searching bool             // the input is acting as a search box
@@ -114,13 +117,20 @@ type Model struct {
 	sessionID    string
 	sessionStart time.Time
 
-	busy         bool
-	pending      *permRequest
-	dialogChoice int // selected option in the permission dialog
-	pendingPlan  *planRequest
-	planChoice   int  // selected option in the plan-approval dialog
-	planFeedback bool // collecting "keep planning" feedback in the input
-	cancel       context.CancelFunc
+	// snapshots takes a shadow-git checkpoint of the worktree before each turn;
+	// snaplog records the (label, id) of each so /snapshots can list them and
+	// /revert can restore one. Both nil when snapshots are disabled (no git).
+	snapshots *snapshot.Manager
+	snaplog   *snapshot.Log
+
+	busy           bool
+	pending        *permRequest
+	dialogChoice   int    // selected option in the permission dialog
+	pendingPreview string // rendered diff of the pending mutating edit, shown in the dialog
+	pendingPlan    *planRequest
+	planChoice     int  // selected option in the plan-approval dialog
+	planFeedback   bool // collecting "keep planning" feedback in the input
+	cancel         context.CancelFunc
 
 	width, height int
 	ready         bool
@@ -142,8 +152,12 @@ func New(runner Runner, asker *Asker, system string, commands *command.Registry)
 	ti := textinput.New()
 	ti.Placeholder = "Ask Korai…"
 	ti.Prompt = "› "
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(colBlue).Bold(true)
-	ti.Cursor.Style = lipgloss.NewStyle().Foreground(colPurple)
+	tiStyles := textinput.DefaultStyles(true)
+	promptStyle := lipgloss.NewStyle().Foreground(colBlue).Bold(true)
+	tiStyles.Focused.Prompt = promptStyle
+	tiStyles.Blurred.Prompt = promptStyle
+	tiStyles.Cursor.Color = colPurple
+	ti.SetStyles(tiStyles)
 	ti.Focus()
 
 	sp := spinner.New()
@@ -181,6 +195,14 @@ func (m Model) WithFileFinder(finder func() []string) Model {
 // into a submitted prompt. Call before tea.NewProgram.
 func (m Model) WithMentionExpander(expand func(string) string) Model {
 	m.mentionExpander = expand
+	return m
+}
+
+// WithImageAttacher wires the function that turns @-referenced image files into
+// image content blocks attached to the user turn (for vision-capable models).
+// Call before tea.NewProgram.
+func (m Model) WithImageAttacher(attach func(string) []apiclient.ImageBlock) Model {
+	m.imageAttacher = attach
 	return m
 }
 
@@ -243,6 +265,15 @@ func (m Model) WithResumeLoader(l ResumeLoader) Model {
 	return m
 }
 
+// WithSnapshotter wires the shadow-git checkpoint manager and its session log,
+// enabling a snapshot before each turn and the /revert and /snapshots commands.
+// Call before tea.NewProgram.
+func (m Model) WithSnapshotter(mgr *snapshot.Manager, log *snapshot.Log) Model {
+	m.snapshots = mgr
+	m.snaplog = log
+	return m
+}
+
 // WithSession seeds the active session id, its creation time, and any prior
 // history (e.g. from --resume or --continue). Call before tea.NewProgram.
 func (m Model) WithSession(id string, created time.Time, history []apiclient.Message) Model {
@@ -268,7 +299,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.onResize(msg)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.onKey(msg)
 	case tea.MouseMsg:
 		// Mouse-wheel scrolling of the transcript; the viewport ignores other
@@ -291,7 +322,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pending = &msg.pr
 		m.dialogChoice = 0
-		m.relayout() // the multi-line dialog needs room
+		// Pre-render the change this edit would make so the user reviews the
+		// actual diff before approving (computed once here, not in the pure View).
+		m.pendingPreview = editPreview(msg.pr.req.ToolName, msg.pr.req.Input, m.diffWidth())
+		m.relayout() // the multi-line dialog (with diff) needs room
 		m.refreshViewport()
 		return m, nil
 	case planRequestMsg:
@@ -320,6 +354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnDoneMsg:
 		m.busy = false
 		m.streaming = false
+		m.input.Placeholder = "Ask Korai…"
 		return m, nil
 	case resumeLoadedMsg:
 		if msg.err != nil {
@@ -332,6 +367,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries = entriesFromMessages(msg.messages)
 		m.addEntry(kindInfo, fmt.Sprintf("resumed session %s (%d messages)", msg.id, len(msg.messages)))
 		m.refreshViewport()
+		return m, nil
+	case snapshotTakenMsg:
+		if m.snaplog != nil {
+			m.snaplog.Add(msg.label, msg.id)
+		}
+		return m, nil
+	case revertDoneMsg:
+		if msg.err != nil {
+			m.addEntry(kindError, "revert failed: "+msg.err.Error())
+			return m, nil
+		}
+		// Drop the restored snapshot and everything newer, so a further /revert
+		// steps further back rather than re-undoing the same turn.
+		if m.snaplog != nil {
+			m.snaplog.Truncate(msg.steps)
+		}
+		m.addEntry(kindInfo, "reverted file changes from before: "+msg.label)
 		return m, nil
 	}
 	return m, nil
@@ -360,13 +412,13 @@ func entriesFromMessages(msgs []apiclient.Message) []entry {
 func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
-	m.input.Width = msg.Width - 4
+	m.input.SetWidth(msg.Width - 4)
 
 	if !m.ready {
-		m.viewport = viewport.New(msg.Width, 1)
+		m.viewport = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(1))
 		m.ready = true
 	} else {
-		m.viewport.Width = msg.Width
+		m.viewport.SetWidth(msg.Width)
 	}
 	// Rebuild the markdown renderer to wrap at the new width. Cached per-entry
 	// renders at the old width are invalidated lazily via renderedWidth.
@@ -410,8 +462,12 @@ func (m Model) bottomHeight() int {
 		return lineCount(m.renderPlanDialog())
 	case m.pending != nil:
 		return lineCount(m.renderDialog())
-	case m.searching, m.busy:
+	case m.searching:
 		return 1
+	case m.busy:
+		// While busy the input stays visible (spinner prefixes it) so the user
+		// can compose a mid-turn steer; its height matches the idle input.
+		return lineCount(m.inputView())
 	default:
 		return lineCount(m.inputView())
 	}
@@ -448,10 +504,10 @@ func (m *Model) relayout() {
 	if h < 1 {
 		h = 1
 	}
-	m.viewport.Height = h
+	m.viewport.SetHeight(h)
 }
 
-func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		if m.cancel != nil {
 			m.cancel()
@@ -487,7 +543,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Shift+Tab cycles the permission mode (default → acceptEdits → plan). The
 	// current mode is shown by the badge above the input, so cycling does not
 	// post a message into the transcript.
-	if msg.Type == tea.KeyShiftTab && m.modes != nil {
+	if msg.String() == "shift+tab" && m.modes != nil {
 		m.modes.Cycle()
 		m.relayout() // the badge may appear or disappear
 		m.refreshViewport()
@@ -495,9 +551,25 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.busy {
-		if msg.String() == "esc" && m.cancel != nil {
-			m.cancel()
-			m.addEntry(kindInfo, "interrupted")
+		// While the agent runs: esc interrupts, enter queues the typed text as a
+		// mid-turn steer, and any other key edits the (still-visible) input.
+		switch msg.String() {
+		case "esc":
+			if m.cancel != nil {
+				m.cancel()
+				m.addEntry(kindInfo, "interrupted")
+			}
+		case "enter":
+			if v := strings.TrimSpace(m.input.Value()); v != "" {
+				m.runner.Enqueue(v)
+				m.input.Reset()
+				m.addEntry(kindUser, v)
+				m.refreshViewport()
+			}
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -532,7 +604,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.Type == tea.KeyEnter {
+	if msg.String() == "enter" {
 		return m.submit()
 	}
 
@@ -547,7 +619,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ctrl+p/n) cycle the selection with wrap-around, tab completes the name and
 // leaves the cursor ready for arguments, enter accepts and runs it, esc
 // dismisses the menu. It reports whether it consumed the key.
-func (m Model) onMenuKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+func (m Model) onMenuKey(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	n := len(m.menu)
 	switch msg.String() {
 	case "up", "ctrl+p":
@@ -616,7 +688,7 @@ func (m Model) acceptMenu() (tea.Model, tea.Cmd) {
 // page (pgup/pgdown) and line (shift+↑/↓) scrolling are claimed here; the mouse
 // wheel scrolls too (handled in Update). It takes a pointer so the scroll
 // position sticks.
-func (m *Model) handleScroll(msg tea.KeyMsg) bool {
+func (m *Model) handleScroll(msg tea.KeyPressMsg) bool {
 	switch msg.String() {
 	case "pgup":
 		m.viewport.PageUp()
@@ -652,7 +724,7 @@ func (m *Model) exitSearch() {
 // onSearchKey handles keys while the input is a find box: esc exits, enter and
 // ctrl+n/↓ jump to the next match, ctrl+p/↑ to the previous, and any other key
 // edits the query and re-runs the search.
-func (m Model) onSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.exitSearch()
@@ -702,7 +774,7 @@ var permOptions = []string{
 
 // onDialogKey drives the permission dialog: ↑/↓ (and ctrl+p/n) move the
 // selection, enter activates it, esc denies.
-func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "ctrl+p":
 		m.dialogChoice = (m.dialogChoice - 1 + len(permOptions)) % len(permOptions)
@@ -730,6 +802,7 @@ func (m Model) onDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) resolvePermission(decision perm.Decision, forSession bool) (tea.Model, tea.Cmd) {
 	pr := *m.pending
 	m.pending = nil
+	m.pendingPreview = ""
 	verb := "denied"
 	switch {
 	case forSession:
@@ -752,7 +825,7 @@ var planOptions = []string{
 
 // onPlanKey drives the plan-approval dialog: ↑/↓ (and ctrl+p/n) move the
 // selection, enter activates it, esc keeps planning without feedback.
-func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onPlanKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "ctrl+p":
 		m.planChoice = (m.planChoice - 1 + len(planOptions)) % len(planOptions)
@@ -783,7 +856,7 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // onPlanFeedbackKey handles the "keep planning" feedback box: enter sends the
 // feedback with a reject, esc cancels back to the dialog.
-func (m Model) onPlanFeedbackKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) onPlanFeedbackKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		feedback := strings.TrimSpace(m.input.Value())
@@ -882,9 +955,72 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 		return m.startCompaction()
 	case command.ResumeSession:
 		return m.startResume(res.Text)
+	case command.RevertSnapshot:
+		return m.startRevert(res.Text)
 	default:
 		return m, nil
 	}
+}
+
+// startRevert restores the worktree to a recorded pre-turn snapshot. With no
+// argument it undoes the last turn (one step back); /revert N steps N turns back.
+func (m Model) startRevert(arg string) (tea.Model, tea.Cmd) {
+	if m.snapshots == nil || !m.snapshots.Enabled() || m.snaplog == nil {
+		m.addEntry(kindInfo, "revert is unavailable (snapshots are off — git not found)")
+		return m, nil
+	}
+	if m.busy {
+		m.addEntry(kindInfo, "cannot revert while a turn is in progress")
+		return m, nil
+	}
+	steps := 1
+	if s := strings.TrimSpace(arg); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			m.addEntry(kindError, "usage: /revert [n] — n is how many turns to undo (default 1)")
+			return m, nil
+		}
+		steps = n
+	}
+	entry, ok := m.snaplog.At(steps)
+	if !ok {
+		m.addEntry(kindInfo, fmt.Sprintf("nothing to revert: only %d snapshot(s) recorded", m.snaplog.Len()))
+		return m, nil
+	}
+	mgr := m.snapshots
+	id, label := entry.ID, entry.Label
+	return m, func() tea.Msg {
+		err := mgr.Restore(context.Background(), id)
+		return revertDoneMsg{label: label, steps: steps, err: err}
+	}
+}
+
+// snapshotCmd checkpoints the worktree before a turn. Snapshots are best-effort:
+// any failure (or a disabled manager) yields no message and never blocks the
+// turn. The git work runs off the Update path, keeping the model pure.
+func (m Model) snapshotCmd(label string) tea.Cmd {
+	mgr := m.snapshots
+	short := snapLabel(label)
+	return func() tea.Msg {
+		id, err := mgr.Snapshot(context.Background())
+		if err != nil || id == "" {
+			return nil
+		}
+		return snapshotTakenMsg{label: short, id: id}
+	}
+}
+
+// snapLabel renders a prompt as a compact single-line label for the undo log.
+func snapLabel(prompt string) string {
+	label := strings.TrimSpace(strings.ReplaceAll(prompt, "\n", " "))
+	const max = 60
+	if len(label) > max {
+		label = label[:max-1] + "…"
+	}
+	if label == "" {
+		label = "(empty prompt)"
+	}
+	return label
 }
 
 // startResume loads a saved session by id via the injected loader.
@@ -952,9 +1088,17 @@ func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
 	if m.mentionExpander != nil {
 		sendText = m.mentionExpander(promptText)
 	}
+	blocks := []apiclient.ContentBlock{apiclient.TextBlock{Text: sendText}}
+	// Attach any @-referenced images as image blocks (for vision models). The
+	// raw prompt is scanned, not the expanded text, so the @-tokens are intact.
+	if m.imageAttacher != nil {
+		for _, img := range m.imageAttacher(promptText) {
+			blocks = append(blocks, img)
+		}
+	}
 	m.history = append(m.history, apiclient.Message{
 		Role:    apiclient.RoleUser,
-		Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: sendText}},
+		Content: blocks,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -962,8 +1106,16 @@ func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
 	ch := m.runner.Run(ctx, m.history, m.system)
 	m.busy = true
 	m.streaming = false
+	m.input.Placeholder = "steer the agent… (enter to queue · esc to interrupt)"
 
-	return m, tea.Batch(waitForEvent(ch), m.spinner.Tick)
+	cmds := []tea.Cmd{waitForEvent(ch), m.spinner.Tick}
+	// Checkpoint the worktree before the turn's edits land, so /revert can undo
+	// them. The engine streams text before any tool runs, so the snapshot
+	// (git add -A + write-tree) completes well ahead of the first file write.
+	if m.snapshots != nil && m.snapshots.Enabled() {
+		cmds = append(cmds, m.snapshotCmd(promptText))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
@@ -1036,9 +1188,52 @@ func parseEditChange(name string, input json.RawMessage) *editChange {
 	return &editChange{old: in.OldString, new: in.NewString}
 }
 
+// editPreview renders the change a mutating file tool would make, so the user
+// can review it in the permission dialog before it is applied. It is pure (no
+// file I/O — safe to call from Update): Edit shows the old→new replacement,
+// Write shows the new content as additions, ApplyPatch shows the patch itself.
+// Returns "" for non-mutating tools or unparseable input. Height-capped.
+func editPreview(name string, input json.RawMessage, width int) string {
+	const maxLines = 30
+	switch name {
+	case "Edit":
+		if ec := parseEditChange(name, input); ec != nil {
+			return capLines(renderDiff(ec.old, ec.new, width), maxLines)
+		}
+	case "Write":
+		var in struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(input, &in); err == nil && in.Content != "" {
+			return capLines(renderDiff("", in.Content, width), maxLines)
+		}
+	case "ApplyPatch":
+		var in struct {
+			Patch string `json:"patch"`
+		}
+		if err := json.Unmarshal(input, &in); err == nil && strings.TrimSpace(in.Patch) != "" {
+			return capLines(strings.TrimRight(in.Patch, "\n"), maxLines)
+		}
+	}
+	return ""
+}
+
+// capLines truncates s to at most n lines, noting how many were hidden.
+func capLines(s string, n int) string {
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n") + fmt.Sprintf("\n… (%d more lines)", len(lines)-n)
+}
+
 // diffWidth is the width available for a diff block, accounting for its indent.
 func (m Model) diffWidth() int {
-	w := m.viewport.Width - 4
+	w := m.viewport.Width() - 4
 	if w < 20 {
 		w = 20
 	}
@@ -1069,7 +1264,7 @@ func (m *Model) renderEntries() string {
 	if len(m.entries) == 0 {
 		return m.welcomeView()
 	}
-	w := m.viewport.Width
+	w := m.viewport.Width()
 	m.entryOffsets = make([]int, len(m.entries))
 	var b strings.Builder
 	line := 0
@@ -1145,8 +1340,18 @@ func (m *Model) assistantText(i, w int) string {
 	return m.styles.assistant.Width(w).Render(e.text)
 }
 
-// View renders the current frame.
-func (m Model) View() string {
+// View renders the current frame. Bubble Tea v2 reads the alt-screen and mouse
+// mode off the returned View each frame (they are no longer NewProgram
+// options), so they are requested here.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+// render builds the transcript + input frame as a styled string.
+func (m Model) render() string {
 	if m.quitting {
 		return ""
 	}
@@ -1165,7 +1370,8 @@ func (m Model) View() string {
 	case m.searching:
 		bottom = m.renderSearch()
 	case m.busy:
-		bottom = m.spinner.View() + " working… (esc to interrupt)"
+		// Spinner inline-prefixes the input so a steer can be typed while busy.
+		bottom = m.spinner.View() + " " + m.inputView()
 	default:
 		bottom = m.inputView()
 	}
@@ -1314,7 +1520,10 @@ func (m Model) renderDialog() string {
 	pr := m.pending
 	var b strings.Builder
 	fmt.Fprintf(&b, "Allow %s?", pr.req.ToolName)
-	if args := oneLine(string(pr.req.Input)); args != "" {
+	// For mutating file tools, show the diff under review instead of raw JSON args.
+	if m.pendingPreview != "" {
+		b.WriteString("\n\n" + m.pendingPreview)
+	} else if args := oneLine(string(pr.req.Input)); args != "" {
 		b.WriteString("\n" + args)
 	}
 	b.WriteString("\n\n")
@@ -1364,14 +1573,14 @@ func (m Model) renderPlanDialog() string {
 		b.WriteByte('\n')
 	}
 	b.WriteString(m.styles.status.Render("↑/↓ select · enter confirm · esc keep planning"))
-	return m.styles.dialog.Width(m.viewport.Width).Render(b.String())
+	return m.styles.dialog.Width(m.viewport.Width()).Render(b.String())
 }
 
 // renderPlanFeedback shows the "keep planning" feedback box.
 func (m Model) renderPlanFeedback() string {
 	body := "Keep planning — tell the agent what to change:\n\n" + m.input.View() +
 		"\n\nenter to send · esc to skip"
-	return m.styles.dialog.Width(m.viewport.Width).Render(body)
+	return m.styles.dialog.Width(m.viewport.Width()).Render(body)
 }
 
 // oneLine collapses content to a single trimmed line, truncated for display.
