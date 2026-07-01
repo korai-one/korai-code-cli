@@ -60,12 +60,12 @@ func TestResolveAdvertisedHealthy(t *testing.T) {
 	srv := healthServer(t, true)
 	writeAdvert(t, home, srv.URL)
 
-	ep, ok := Resolve(context.Background(), "", srv.Client())
+	ep, ok := Resolve(context.Background(), "", "", "", srv.Client())
 	if !ok {
 		t.Fatal("Resolve returned ok=false for a healthy advertised worker")
 	}
-	if ep.IsSocket() {
-		t.Error("expected an HTTP endpoint, got a socket")
+	if ep.IsDirect() {
+		t.Error("expected an HTTP endpoint, got a direct channel")
 	}
 	if ep.URL != srv.URL {
 		t.Errorf("url = %q, want %q", ep.URL, srv.URL)
@@ -79,7 +79,7 @@ func TestResolveAdvertisedUnhealthy(t *testing.T) {
 	srv := healthServer(t, false)
 	writeAdvert(t, home, srv.URL)
 
-	if _, ok := Resolve(context.Background(), "", srv.Client()); ok {
+	if _, ok := Resolve(context.Background(), "", "", "", srv.Client()); ok {
 		t.Error("Resolve should reject an unhealthy worker")
 	}
 }
@@ -87,7 +87,7 @@ func TestResolveAdvertisedUnhealthy(t *testing.T) {
 // TestResolveNoAdvert: no file means no local worker.
 func TestResolveNoAdvert(t *testing.T) {
 	setHome(t) // empty temp home, no advert file
-	if _, ok := Resolve(context.Background(), "", nil); ok {
+	if _, ok := Resolve(context.Background(), "", "", "", nil); ok {
 		t.Error("Resolve should be ok=false with no advert file")
 	}
 }
@@ -96,7 +96,7 @@ func TestResolveNoAdvert(t *testing.T) {
 // health probe — the operator asked for it. A trailing slash is trimmed.
 func TestResolveExplicitNoProbe(t *testing.T) {
 	setHome(t)
-	ep, ok := Resolve(context.Background(), "http://127.0.0.1:9999/", nil)
+	ep, ok := Resolve(context.Background(), "http://127.0.0.1:9999/", "", "", nil)
 	if !ok {
 		t.Fatal("explicit override must resolve ok=true")
 	}
@@ -138,9 +138,22 @@ func TestResolvePrefersSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ep, ok := Resolve(context.Background(), "", nil)
-	if !ok || !ep.IsSocket() || ep.Socket != sockPath {
-		t.Fatalf("expected socket endpoint %q, got %+v ok=%v", sockPath, ep, ok)
+	ep, ok := Resolve(context.Background(), "", "", "", nil)
+	if !ok || !ep.IsDirect() || ep.Network != "unix" || ep.Address != sockPath {
+		t.Fatalf("expected unix socket endpoint %q, got %+v ok=%v", sockPath, ep, ok)
+	}
+}
+
+// TestResolveExplicitTCPAddr: an explicit LAN address resolves to a tcp direct
+// channel (no probe), carrying the token.
+func TestResolveExplicitTCPAddr(t *testing.T) {
+	setHome(t)
+	ep, ok := Resolve(context.Background(), "", "192.168.1.50:9876", "sekret", nil)
+	if !ok {
+		t.Fatal("explicit tcp address must resolve ok=true")
+	}
+	if !ep.IsDirect() || ep.Network != "tcp" || ep.Address != "192.168.1.50:9876" || ep.Token != "sekret" {
+		t.Errorf("endpoint = %+v, want tcp 192.168.1.50:9876 token sekret", ep)
 	}
 }
 

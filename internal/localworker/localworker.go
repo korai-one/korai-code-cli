@@ -113,25 +113,33 @@ func healthy(ctx context.Context, client *http.Client, baseURL string) bool {
 	return strings.Contains(string(body), `"ok"`)
 }
 
-// Endpoint is a resolved local-worker address. When Socket is set, the caller
-// should use the direct binary channel (the local fast path); otherwise it uses
-// the loopback OpenAI-HTTP URL.
+// Endpoint is a resolved local-worker address. When Network is set the caller
+// should use the direct binary channel (the local fast path): Network is "unix"
+// for a co-located worker socket or "tcp" for a home/LAN inference server, and
+// Address is the socket path or host:port. Otherwise it uses the loopback
+// OpenAI-HTTP URL. Token authenticates the tcp channel.
 type Endpoint struct {
-	Socket string
-	URL    string
+	Network string
+	Address string
+	Token   string
+	URL     string
 }
 
-// IsSocket reports whether the endpoint is the direct binary channel.
-func (e Endpoint) IsSocket() bool { return e.Socket != "" }
+// IsDirect reports whether the endpoint is the direct binary channel (rather
+// than the HTTP URL).
+func (e Endpoint) IsDirect() bool { return e.Network != "" }
 
 // Resolve picks the local-worker endpoint to use, honoring precedence: an
-// explicit override (CLI flag or env) wins and is used as-is (no probe — the
-// operator asked for it, and it is always an HTTP URL); otherwise an advertised
-// worker is used only if a probe passes, preferring the direct Socket over the
-// HTTP URL. It returns ok=false when neither applies, meaning the caller should
-// use the networked Korai backend.
-func Resolve(ctx context.Context, explicit string, client *http.Client) (Endpoint, bool) {
-	if e := strings.TrimSpace(explicit); e != "" {
+// explicit TCP address (a LAN inference server) wins, then an explicit HTTP URL
+// override — both used as-is without a probe, since the operator asked for them.
+// Otherwise an advertised same-machine worker is used only if a probe passes,
+// preferring the direct Unix socket over the HTTP URL. It returns ok=false when
+// none applies, meaning the caller should use the networked Korai backend.
+func Resolve(ctx context.Context, explicitURL, explicitAddr, token string, client *http.Client) (Endpoint, bool) {
+	if a := strings.TrimSpace(explicitAddr); a != "" {
+		return Endpoint{Network: "tcp", Address: a, Token: token}, true
+	}
+	if e := strings.TrimSpace(explicitURL); e != "" {
 		return Endpoint{URL: strings.TrimRight(e, "/")}, true
 	}
 	info, ok := Read()
@@ -139,8 +147,8 @@ func Resolve(ctx context.Context, explicit string, client *http.Client) (Endpoin
 		return Endpoint{}, false
 	}
 	// Prefer the direct socket when advertised and its handshake succeeds.
-	if info.Socket != "" && socketHealthy(ctx, info.Socket) {
-		return Endpoint{Socket: info.Socket}, true
+	if info.Socket != "" && socketHealthy(ctx, "unix", info.Socket, "") {
+		return Endpoint{Network: "unix", Address: info.Socket}, true
 	}
 	if info.URL != "" && healthy(ctx, client, info.URL) {
 		return Endpoint{URL: strings.TrimRight(info.URL, "/")}, true
@@ -148,22 +156,23 @@ func Resolve(ctx context.Context, explicit string, client *http.Client) (Endpoin
 	return Endpoint{}, false
 }
 
-// socketHealthy reports whether a localproto worker is live at sockPath by
-// dialing it and completing the Hello/Ready handshake with a matching protocol
-// version. Any dial/transport error or version mismatch means no.
-func socketHealthy(ctx context.Context, sockPath string) bool {
+// socketHealthy reports whether a localproto worker is live at network/address
+// by dialing it and completing the Hello/Ready handshake with a matching
+// protocol version. token is presented in the Hello (for the tcp transport).
+// Any dial/transport error or version mismatch means no.
+func socketHealthy(ctx context.Context, network, address, token string) bool {
 	dctx, cancel := context.WithTimeout(ctx, healthTimeout)
 	defer cancel()
 
 	var d net.Dialer
-	conn, err := d.DialContext(dctx, "unix", sockPath)
+	conn, err := d.DialContext(dctx, network, address)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(healthTimeout))
-	if err := localproto.WriteJSON(conn, localproto.FrameHello, localproto.HelloPayload{Version: localproto.ProtocolVersion}); err != nil {
+	if err := localproto.WriteJSON(conn, localproto.FrameHello, localproto.HelloPayload{Version: localproto.ProtocolVersion, Token: token}); err != nil {
 		return false
 	}
 	ft, body, err := localproto.ReadFrame(conn)

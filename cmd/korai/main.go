@@ -68,18 +68,23 @@ type runOptions struct {
 	// worker (bypassing the orchestrator). Empty means auto-detect an advertised
 	// worker, then fall back to the networked backend.
 	localWorkerURL string
+	// localWorkerAddr, when set, routes inference to a home/LAN inference server
+	// over the direct binary channel on TCP (host:port); the token comes from
+	// KORAI_LOCAL_WORKER_TOKEN.
+	localWorkerAddr string
 }
 
 func rootCmd() *cobra.Command {
 	var (
-		printMode   bool
-		model       string
-		debug       bool
-		permModeStr string
-		autoYes     bool
-		cont        bool
-		resumeID    string
-		localWorker string
+		printMode       bool
+		model           string
+		debug           bool
+		permModeStr     string
+		autoYes         bool
+		cont            bool
+		resumeID        string
+		localWorker     string
+		localWorkerAddr string
 	)
 
 	root := &cobra.Command{
@@ -98,14 +103,15 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			opts := runOptions{
-				model:          model,
-				modelSet:       cmd.Flags().Changed("model"),
-				permMode:       mode,
-				permModeSet:    cmd.Flags().Changed("permission-mode"),
-				autoYes:        autoYes,
-				cont:           cont,
-				resumeID:       resumeID,
-				localWorkerURL: localWorker,
+				model:           model,
+				modelSet:        cmd.Flags().Changed("model"),
+				permMode:        mode,
+				permModeSet:     cmd.Flags().Changed("permission-mode"),
+				autoYes:         autoYes,
+				cont:            cont,
+				resumeID:        resumeID,
+				localWorkerURL:  localWorker,
+				localWorkerAddr: localWorkerAddr,
 			}
 			if printMode {
 				prompt, perr := resolvePrompt(args)
@@ -148,6 +154,8 @@ func rootCmd() *cobra.Command {
 		"resume a saved session by id")
 	root.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
+	root.Flags().StringVar(&localWorkerAddr, "local-worker-addr", "",
+		"route inference to a home/LAN inference server over the direct binary channel (host:port; token via KORAI_LOCAL_WORKER_TOKEN)")
 
 	root.AddCommand(serveCmd())
 

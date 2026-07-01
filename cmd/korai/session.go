@@ -174,13 +174,20 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	if localOverride == "" {
 		localOverride = os.Getenv("KORAI_LOCAL_WORKER_URL")
 	}
-	endpoint, useLocal := localworker.Resolve(ctx, localOverride, nil)
+	// A dedicated home/LAN inference server is reached over the direct binary
+	// channel on TCP: an explicit address (flag or env) plus an optional token.
+	lanAddr := opts.localWorkerAddr
+	if lanAddr == "" {
+		lanAddr = os.Getenv("KORAI_LOCAL_WORKER_ADDR")
+	}
+	lanToken := os.Getenv("KORAI_LOCAL_WORKER_TOKEN")
+	endpoint, useLocal := localworker.Resolve(ctx, localOverride, lanAddr, lanToken, nil)
 
 	var bk backend
 	if useLocal {
 		bk = backendKorai
-		if endpoint.IsSocket() {
-			slog.Info("using local worker", "socket", endpoint.Socket)
+		if endpoint.IsDirect() {
+			slog.Info("using local worker", "network", endpoint.Network, "address", endpoint.Address)
 		} else {
 			slog.Info("using local worker", "url", endpoint.URL)
 		}
@@ -226,9 +233,12 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	// the environment via newClient.
 	var client apiclient.Client
 	switch {
-	case useLocal && endpoint.IsSocket():
-		// Direct binary channel: the local fast path (hop 1).
-		client = apiclient.NewLocalWorkerClient(endpoint.Socket, model)
+	case useLocal && endpoint.IsDirect() && endpoint.Network == "tcp":
+		// Direct binary channel to a home/LAN inference server (hop 1 over TCP).
+		client = apiclient.NewLocalWorkerClientTCP(endpoint.Address, endpoint.Token, model)
+	case useLocal && endpoint.IsDirect():
+		// Direct binary channel to a co-located worker (hop 1 over a unix socket).
+		client = apiclient.NewLocalWorkerClient(endpoint.Address, model)
 	case useLocal:
 		// Co-located worker exposing only the loopback OpenAI-HTTP endpoint.
 		client = apiclient.NewKoraiClient("", endpoint.URL, model)

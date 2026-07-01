@@ -31,6 +31,7 @@ import (
 // serialized: the CLI drives one turn at a time.
 type LocalWorkerClient struct {
 	model string
+	token string
 	dial  func(ctx context.Context) (io.ReadWriteCloser, error)
 
 	// turnSem serializes Complete calls: one turn in flight at a time.
@@ -45,21 +46,34 @@ type LocalWorkerClient struct {
 	writeMu sync.Mutex
 }
 
-// NewLocalWorkerClient creates a client that dials the worker's Unix-domain
-// socket at socketPath. model is the routing alias/id stamped on each request
-// unless a per-request model overrides it.
+// NewLocalWorkerClient creates a client that dials a co-located worker's
+// Unix-domain socket at socketPath. model is the routing alias/id stamped on
+// each request unless a per-request model overrides it.
 func NewLocalWorkerClient(socketPath, model string) *LocalWorkerClient {
-	return newLocalWorkerClient(model, func(ctx context.Context) (io.ReadWriteCloser, error) {
+	return newLocalWorkerClient(model, "", dialer("unix", socketPath))
+}
+
+// NewLocalWorkerClientTCP creates a client that dials a worker over TCP at
+// address — a dedicated home/LAN inference server. token, when non-empty, is
+// presented in the handshake for the worker to validate.
+func NewLocalWorkerClientTCP(address, token, model string) *LocalWorkerClient {
+	return newLocalWorkerClient(model, token, dialer("tcp", address))
+}
+
+// dialer returns a dial func for the given network/address.
+func dialer(network, address string) func(ctx context.Context) (io.ReadWriteCloser, error) {
+	return func(ctx context.Context) (io.ReadWriteCloser, error) {
 		var d net.Dialer
-		return d.DialContext(ctx, "unix", socketPath)
-	})
+		return d.DialContext(ctx, network, address)
+	}
 }
 
 // newLocalWorkerClient is the injectable constructor used by tests to supply a
-// fake transport in place of a real socket dial.
-func newLocalWorkerClient(model string, dial func(ctx context.Context) (io.ReadWriteCloser, error)) *LocalWorkerClient {
+// fake transport in place of a real dial.
+func newLocalWorkerClient(model, token string, dial func(ctx context.Context) (io.ReadWriteCloser, error)) *LocalWorkerClient {
 	return &LocalWorkerClient{
 		model:   model,
+		token:   token,
 		dial:    dial,
 		turnSem: make(chan struct{}, 1),
 	}
@@ -104,7 +118,7 @@ func (c *LocalWorkerClient) ensureConn(ctx context.Context) error {
 		return err
 	}
 	reader := bufio.NewReader(conn)
-	if err := localproto.WriteJSON(conn, localproto.FrameHello, localproto.HelloPayload{Version: localproto.ProtocolVersion}); err != nil {
+	if err := localproto.WriteJSON(conn, localproto.FrameHello, localproto.HelloPayload{Version: localproto.ProtocolVersion, Token: c.token}); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("hello: %w", err)
 	}

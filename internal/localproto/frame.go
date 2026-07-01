@@ -159,9 +159,12 @@ func ReadFrame(r io.Reader) (FrameType, []byte, error) {
 
 // --- payload types -------------------------------------------------------
 
-// HelloPayload is the CLI's handshake.
+// HelloPayload is the CLI's handshake. Token, when set, is a shared secret the
+// worker validates — used on the TCP (LAN) transport where the channel is
+// reachable beyond the local machine; empty on the Unix-domain socket.
 type HelloPayload struct {
-	Version int `json:"version"`
+	Version int    `json:"version"`
+	Token   string `json:"token,omitempty"`
 }
 
 // ReadyPayload is the worker's handshake reply.

@@ -89,7 +89,7 @@ func TestLocalWorkerStreamsTokensAndToolCall(t *testing.T) {
 			_ = localproto.WriteJSON(conn, localproto.FrameDone, localproto.DonePayload{FinishReason: "stop"})
 		},
 	}
-	c := newLocalWorkerClient("auto", worker.dial)
+	c := newLocalWorkerClient("auto", "", worker.dial)
 
 	ch, err := c.Complete(context.Background(), Request{Messages: []Message{userMsg("hi")}})
 	if err != nil {
@@ -136,7 +136,7 @@ func TestLocalWorkerSendsTurnPayload(t *testing.T) {
 			_ = localproto.WriteJSON(conn, localproto.FrameDone, localproto.DonePayload{FinishReason: "stop"})
 		},
 	}
-	c := newLocalWorkerClient("auto", worker.dial)
+	c := newLocalWorkerClient("auto", "", worker.dial)
 
 	req := Request{
 		Model:    "balanced",
@@ -172,7 +172,7 @@ func TestLocalWorkerErrorFrame(t *testing.T) {
 			_ = localproto.WriteJSON(conn, localproto.FrameError, localproto.ErrorPayload{Message: "boom"})
 		},
 	}
-	c := newLocalWorkerClient("auto", worker.dial)
+	c := newLocalWorkerClient("auto", "", worker.dial)
 	got := collect(t, mustComplete(t, c, Request{Messages: []Message{userMsg("hi")}}))
 	if len(got) == 0 {
 		t.Fatal("no events")
