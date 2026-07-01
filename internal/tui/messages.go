@@ -3,7 +3,7 @@ package tui
 import (
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
@@ -40,6 +40,21 @@ type planRequestMsg struct {
 // filesLoadedMsg delivers the lazily-walked workspace file list for @-mentions.
 type filesLoadedMsg struct {
 	paths []string
+}
+
+// snapshotTakenMsg reports a pre-turn shadow-git checkpoint that was recorded
+// successfully, so the model can append it to the undo log.
+type snapshotTakenMsg struct {
+	label string
+	id    string
+}
+
+// revertDoneMsg carries the result of a /revert: the label of the snapshot the
+// worktree was restored to, how many steps back it was, and any error.
+type revertDoneMsg struct {
+	label string
+	steps int
+	err   error
 }
 
 // resumeLoadedMsg carries the result of loading a saved session.

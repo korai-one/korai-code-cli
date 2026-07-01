@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -107,7 +107,7 @@ func (m Model) atWindow() ([]string, int) {
 // onAtKey handles keys while the @-mention picker is open: ↑/↓ (and ctrl+p/n)
 // cycle with wrap, tab/enter insert the selected path, esc dismisses. It reports
 // whether it consumed the key.
-func (m Model) onAtKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+func (m Model) onAtKey(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	n := len(m.atItems)
 	switch msg.String() {
 	case "up", "ctrl+p":

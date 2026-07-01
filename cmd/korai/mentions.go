@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,7 +9,28 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 )
+
+// imageMediaTypes maps an image file extension to its MIME type. An @-mention of
+// one of these is attached as an image (for vision models), not inlined as text.
+var imageMediaTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+// maxImageBytes caps an attached image so a huge file can't blow up the request.
+const maxImageBytes = 8 * 1024 * 1024
+
+// imageMediaType returns the MIME type for an image path; ok is false otherwise.
+func imageMediaType(rel string) (string, bool) {
+	mt, ok := imageMediaTypes[strings.ToLower(filepath.Ext(rel))]
+	return mt, ok
+}
 
 // maxWorkspaceFiles caps the @-mention candidate list so the picker stays
 // responsive in very large trees.
@@ -78,6 +100,9 @@ func mentionExpander(wd string) func(string) string {
 				continue
 			}
 			seen[rel] = true
+			if _, isImg := imageMediaType(rel); isImg {
+				continue // images are attached as image blocks, not inlined as text
+			}
 			full := filepath.Join(wd, filepath.FromSlash(rel))
 			data, err := os.ReadFile(full)
 			if err != nil {
@@ -94,5 +119,40 @@ func mentionExpander(wd string) func(string) string {
 			}
 		}
 		return b.String()
+	}
+}
+
+// imageAttacher returns a function that reads each @-mentioned image file and
+// returns it as an apiclient.ImageBlock (a base64 data URI), so vision-capable
+// models receive the image itself. Non-image mentions are ignored here (the
+// text mentionExpander inlines those). Unreadable, empty, or oversized files
+// are skipped silently — a bad attachment must not break the turn.
+func imageAttacher(wd string) func(string) []apiclient.ImageBlock {
+	return func(prompt string) []apiclient.ImageBlock {
+		matches := mentionRE.FindAllStringSubmatch(prompt, -1)
+		if len(matches) == 0 {
+			return nil
+		}
+		var out []apiclient.ImageBlock
+		seen := make(map[string]bool)
+		for _, mt := range matches {
+			rel := mt[2]
+			if seen[rel] {
+				continue
+			}
+			seen[rel] = true
+			mediaType, ok := imageMediaType(rel)
+			if !ok {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(wd, filepath.FromSlash(rel)))
+			if err != nil || len(data) == 0 || len(data) > maxImageBytes {
+				continue
+			}
+			out = append(out, apiclient.ImageBlock{
+				Source: "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data),
+			})
+		}
+		return out
 	}
 }

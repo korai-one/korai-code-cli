@@ -206,12 +206,15 @@ func convertToKoraiMessages(msgs []Message) ([]korai.Message, error) {
 		case RoleUser:
 			var parts []string
 			var text strings.Builder
+			var images []ImageBlock
 			for _, b := range m.Content {
 				switch v := b.(type) {
 				case TextBlock:
 					text.WriteString(v.Text)
 				case ToolResultBlock:
 					parts = append(parts, renderToolResultText(toolNames[v.ToolCallID], v.Content, v.IsError))
+				case ImageBlock:
+					images = append(images, v)
 				default:
 					return nil, fmt.Errorf("unsupported block %T in user message", b)
 				}
@@ -219,10 +222,25 @@ func convertToKoraiMessages(msgs []Message) ([]korai.Message, error) {
 			if text.Len() > 0 {
 				parts = append([]string{text.String()}, parts...)
 			}
+			combined := strings.Join(parts, "\n\n")
+			if len(images) > 0 {
+				// Vision-capable models take multimodal content parts: carry the
+				// text (and any tool-result feedback) as a text part, then each
+				// image as an image_url part the orchestrator forwards verbatim.
+				cps := make([]korai.ContentPart, 0, len(images)+1)
+				if combined != "" {
+					cps = append(cps, korai.TextPart(combined))
+				}
+				for _, img := range images {
+					cps = append(cps, korai.ImagePart(img.Source))
+				}
+				out = append(out, korai.UserMessageWithParts(cps...))
+				continue
+			}
 			// One user message carrying the genuine text and/or the tool-result
 			// feedback. A genuinely empty user turn still emits an empty message
 			// so the turn count is preserved.
-			out = append(out, korai.Message{Role: "user", Content: strings.Join(parts, "\n\n")})
+			out = append(out, korai.Message{Role: "user", Content: combined})
 
 		case RoleAssistant:
 			var text strings.Builder

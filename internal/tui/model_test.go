@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
@@ -36,6 +36,8 @@ func (f fakeRunner) Run(_ context.Context, _ []apiclient.Message, _ string) <-ch
 	close(ch)
 	return ch
 }
+
+func (f fakeRunner) Enqueue(string) {}
 
 // ready returns a model sized so the viewport is initialized.
 func ready(r Runner) Model {
@@ -138,7 +140,7 @@ func TestSubmitStartsTurn(t *testing.T) {
 	m := ready(fakeRunner{events: []engine.Event{engine.DoneEvent{}}})
 	m.input.SetValue("do something")
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if !m.busy {
@@ -164,7 +166,7 @@ func TestSlashClearResetsTranscript(t *testing.T) {
 	m.addEntry(kindUser, "old")
 	m.input.SetValue("/clear")
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if len(m.entries) != 0 {
@@ -180,7 +182,7 @@ func TestSlashHelpShowsText(t *testing.T) {
 	m := ready(fakeRunner{})
 	m.input.SetValue("/help")
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if m.busy {
@@ -196,7 +198,7 @@ func TestSlashUnknownCommand(t *testing.T) {
 	m := ready(fakeRunner{})
 	m.input.SetValue("/nope")
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if e := lastEntry(m); e.kind != kindError || !strings.Contains(e.text, "unknown command") {
@@ -223,7 +225,7 @@ func TestSlashPromptCommandStartsTurn(t *testing.T) {
 	m = tm.(Model)
 	m.input.SetValue("/explain the loop")
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if !m.busy {
@@ -246,7 +248,7 @@ func TestSubmitEmptyIgnored(t *testing.T) {
 	m := ready(fakeRunner{})
 	m.input.SetValue("   ")
 
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 
 	if m.busy || len(m.entries) != 0 {
@@ -266,7 +268,7 @@ func TestPermissionDialogClearsAndLogs(t *testing.T) {
 	}
 
 	// Default selection is "Allow once"; enter confirms it.
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.pending != nil {
 		t.Error("pending should clear after a decision")
@@ -299,7 +301,7 @@ func TestDialogDenyOnEscape(t *testing.T) {
 
 	tm, _ := m.Update(permRequestMsg{pr: pr})
 	m = tm.(Model)
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = tm.(Model)
 
 	if m.pending != nil {
@@ -377,7 +379,7 @@ func TestSlashCompactRunsCompactor(t *testing.T) {
 	}
 	m.input.SetValue("/compact")
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if !m.busy {
 		t.Error("compaction should mark the model busy")
@@ -427,7 +429,7 @@ func TestCompactUnavailable(t *testing.T) {
 	}
 	m.input.SetValue("/compact")
 
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.busy {
 		t.Error("compaction must not start without a compactor")
@@ -444,7 +446,7 @@ func TestShiftTabCyclesMode(t *testing.T) {
 	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = tm.(Model)
 
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	m = tm.(Model)
 	if modes.Get() != perm.ModeAcceptEdits {
 		t.Errorf("after one shift+tab = %v, want acceptEdits", modes.Get())
@@ -454,11 +456,11 @@ func TestShiftTabCyclesMode(t *testing.T) {
 	if len(m.entries) != 0 {
 		t.Errorf("shift+tab should not add transcript entries, got %d", len(m.entries))
 	}
-	if !strings.Contains(m.View(), "accept edits") {
-		t.Errorf("badge should reflect acceptEdits mode:\n%s", m.View())
+	if !strings.Contains(m.View().Content, "accept edits") {
+		t.Errorf("badge should reflect acceptEdits mode:\n%s", m.View().Content)
 	}
 
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	m = tm.(Model)
 	if modes.Get() != perm.ModePlan {
 		t.Errorf("after two shift+tab = %v, want plan", modes.Get())
@@ -472,12 +474,12 @@ func TestModeBadge(t *testing.T) {
 	tm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = tm.(Model)
 
-	if !strings.Contains(m.View(), "plan mode") {
-		t.Errorf("plan badge not shown in view:\n%s", m.View())
+	if !strings.Contains(m.View().Content, "plan mode") {
+		t.Errorf("plan badge not shown in view:\n%s", m.View().Content)
 	}
 
 	modes.Set(perm.ModeDefault)
-	if strings.Contains(m.View(), "plan mode") {
+	if strings.Contains(m.View().Content, "plan mode") {
 		t.Error("default mode should show no plan badge")
 	}
 }
@@ -495,12 +497,12 @@ func TestPlanApprovalDialog(t *testing.T) {
 	if m.pendingPlan == nil {
 		t.Fatal("pending plan should be set")
 	}
-	if !strings.Contains(m.View(), "step 1; step 2") {
-		t.Errorf("plan dialog should show the plan:\n%s", m.View())
+	if !strings.Contains(m.View().Content, "step 1; step 2") {
+		t.Errorf("plan dialog should show the plan:\n%s", m.View().Content)
 	}
 
 	// Default selection is "Approve"; enter confirms it.
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.pendingPlan != nil {
 		t.Error("pending plan should clear after a decision")
@@ -526,10 +528,10 @@ func TestPlanDialogFitsScreen(t *testing.T) {
 	tm, _ = m.Update(planRequestMsg{pr: pr})
 	m = tm.(Model)
 
-	if lines := strings.Count(m.View(), "\n") + 1; lines > 24 {
+	if lines := strings.Count(m.View().Content, "\n") + 1; lines > 24 {
 		t.Errorf("plan dialog frame is %d lines, overflows the 24-row terminal", lines)
 	}
-	if !strings.Contains(m.View(), "Approve") {
+	if !strings.Contains(m.View().Content, "Approve") {
 		t.Error("plan dialog options should be visible")
 	}
 }
@@ -549,25 +551,25 @@ func TestPlanFeedbackFlow(t *testing.T) {
 
 	// Select "Keep planning (give feedback)" (3rd option) and confirm; this
 	// opens the feedback box without resolving the plan.
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = tm.(Model)
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = tm.(Model)
 	if m.planChoice != 2 {
 		t.Fatalf("two downs should select option 2, got %d", m.planChoice)
 	}
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if !m.planFeedback || m.pendingPlan == nil {
 		t.Fatal("confirming the feedback option should open feedback while keeping the plan pending")
 	}
-	if !strings.Contains(m.View(), "what to change") && !strings.Contains(m.View(), "Keep planning") {
-		t.Errorf("feedback box not shown:\n%s", m.View())
+	if !strings.Contains(m.View().Content, "what to change") && !strings.Contains(m.View().Content, "Keep planning") {
+		t.Errorf("feedback box not shown:\n%s", m.View().Content)
 	}
 
 	// Type feedback and submit; the plan resolves and feedback mode ends.
 	m.input.SetValue("use channels")
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if m.planFeedback || m.pendingPlan != nil {
 		t.Error("submitting feedback should resolve the plan and exit feedback mode")
@@ -622,7 +624,7 @@ func TestResumeLoadsSession(t *testing.T) {
 	m = tm.(Model)
 	m.input.SetValue("/resume sess-1")
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = tm.(Model)
 	if cmd == nil {
 		t.Fatal("expected a command to load the session")

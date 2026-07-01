@@ -32,7 +32,7 @@ func sampleMessages() []apiclient.Message {
 // including the ContentBlock interface variants.
 func TestSaveLoadRoundTrip(t *testing.T) {
 	t.Parallel()
-	store := session.NewStore(t.TempDir())
+	store := session.NewFileStore(t.TempDir())
 
 	rec := session.Record{
 		ID:       "test-1",
@@ -62,7 +62,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 // in place and still loads as the full conversation.
 func TestAppendIncremental(t *testing.T) {
 	t.Parallel()
-	store := session.NewStore(t.TempDir())
+	store := session.NewFileStore(t.TempDir())
 	msgs := sampleMessages()
 
 	// First turn: one message.
@@ -89,7 +89,7 @@ func TestAppendIncremental(t *testing.T) {
 // compaction replaces it) rewrites the file rather than appending.
 func TestSaveRewritesOnShrink(t *testing.T) {
 	t.Parallel()
-	store := session.NewStore(t.TempDir())
+	store := session.NewFileStore(t.TempDir())
 	msgs := sampleMessages()
 
 	rec := session.Record{ID: "s", CWD: "/w", Messages: msgs}
@@ -118,7 +118,7 @@ func TestSaveRewritesOnShrink(t *testing.T) {
 func TestFilePermissions(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
-	store := session.NewStore(dir)
+	store := session.NewFileStore(dir)
 	if err := store.Save(session.Record{ID: "p", CWD: "/w", Messages: sampleMessages()}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -170,7 +170,7 @@ func (c xorCodec) Decode(stored []byte) ([]byte, error) {
 func TestCodecRoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	store := session.NewStore(dir).WithCodec(xorCodec{key: 0x5a})
+	store := session.NewFileStore(dir).WithCodec(xorCodec{key: 0x5a})
 
 	rec := session.Record{ID: "enc", CWD: "/w", Model: "m", Messages: sampleMessages()}
 	if err := store.Save(rec); err != nil {
@@ -197,7 +197,7 @@ func TestCodecRoundTrip(t *testing.T) {
 	}
 
 	// A store without the codec cannot decode an encrypted file.
-	if _, err := session.NewStore(dir).Load("enc"); err == nil {
+	if _, err := session.NewFileStore(dir).Load("enc"); err == nil {
 		t.Error("expected error loading encrypted session without codec")
 	}
 }
@@ -205,7 +205,7 @@ func TestCodecRoundTrip(t *testing.T) {
 func TestListSortedAndLatest(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	store := session.NewStore(dir)
+	store := session.NewFileStore(dir)
 
 	recs := []session.Record{
 		{ID: "a", CWD: "/p", Messages: sampleMessages()},
@@ -250,7 +250,7 @@ func TestListSortedAndLatest(t *testing.T) {
 
 func TestListMissingDir(t *testing.T) {
 	t.Parallel()
-	store := session.NewStore(t.TempDir() + "/does-not-exist")
+	store := session.NewFileStore(t.TempDir() + "/does-not-exist")
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List on missing dir should not error: %v", err)

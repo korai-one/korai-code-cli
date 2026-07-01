@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
@@ -246,9 +246,13 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
 		WithModels(sess.models).WithCost(sess.cost).
 		WithFileFinder(sess.fileFinder).WithMentionExpander(sess.mentionExpander).
+		WithImageAttacher(sess.imageAttacher).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
+		WithSnapshotter(sess.snapshots, sess.snaplog).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
+	// v2: alt-screen + mouse mode are requested per-frame on the Model's View,
+	// not as NewProgram options.
+	p := tea.NewProgram(model, tea.WithContext(ctx))
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}

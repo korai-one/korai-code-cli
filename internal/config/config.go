@@ -18,6 +18,14 @@ type Settings struct {
 	Permissions    Permissions              `json:"permissions,omitempty"`
 	MCPServers     map[string]MCPServerSpec `json:"mcpServers,omitempty"`
 	Hooks          map[string][]HookSpec    `json:"hooks,omitempty"`
+	// LSP toggles language-server diagnostics (errors appended to edit/write
+	// results). nil means enabled — it only starts a server when one is on PATH
+	// for an edited file, so it is a no-op otherwise. Set false to disable.
+	LSP *bool `json:"lsp,omitempty"`
+	// Checks are shell commands run by the RunChecks tool to verify the project
+	// (lint, tests, build). Each runs in the working directory; a non-zero exit
+	// is reported as a failed check. Empty means no checks are configured.
+	Checks []string `json:"checks,omitempty"`
 }
 
 // HookSpec is one shell command to run for a lifecycle event. Plain data; the
