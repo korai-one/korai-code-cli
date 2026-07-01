@@ -174,12 +174,16 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	if localOverride == "" {
 		localOverride = os.Getenv("KORAI_LOCAL_WORKER_URL")
 	}
-	localURL, useLocal := localworker.Resolve(ctx, localOverride, nil)
+	endpoint, useLocal := localworker.Resolve(ctx, localOverride, nil)
 
 	var bk backend
 	if useLocal {
 		bk = backendKorai
-		slog.Info("using local worker", "url", localURL)
+		if endpoint.IsSocket() {
+			slog.Info("using local worker", "socket", endpoint.Socket)
+		} else {
+			slog.Info("using local worker", "url", endpoint.URL)
+		}
 	} else {
 		var err error
 		if bk, err = selectBackend(); err != nil {
@@ -221,9 +225,14 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	// The local worker needs no API key; the networked backends read theirs from
 	// the environment via newClient.
 	var client apiclient.Client
-	if useLocal {
-		client = apiclient.NewKoraiClient("", localURL, model)
-	} else {
+	switch {
+	case useLocal && endpoint.IsSocket():
+		// Direct binary channel: the local fast path (hop 1).
+		client = apiclient.NewLocalWorkerClient(endpoint.Socket, model)
+	case useLocal:
+		// Co-located worker exposing only the loopback OpenAI-HTTP endpoint.
+		client = apiclient.NewKoraiClient("", endpoint.URL, model)
+	default:
 		client = bk.newClient(model)
 	}
 	models := apiclient.NewModelSelector(model)
