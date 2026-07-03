@@ -103,6 +103,10 @@ type Model struct {
 	models       *apiclient.ModelSelector
 	cost         *cost.Tracker
 	planApprover *PlanApprover
+	// authGate reports whether a turn may run: nil when the active backend is
+	// ready, or an error (shown to the user) when a remote turn needs an API key
+	// that is not set. Consulted before each turn; nil means always allowed.
+	authGate func() error
 
 	// sessionAllowed records tool names the user chose to allow for the rest of
 	// the session ("[a]lways" in the permission dialog), so repeat calls skip the
@@ -217,6 +221,14 @@ func (m Model) WithModels(s *apiclient.ModelSelector) Model {
 // before tea.NewProgram.
 func (m Model) WithCost(t *cost.Tracker) Model {
 	m.cost = t
+	return m
+}
+
+// WithAuthGate wires a check consulted before each turn: when it returns an
+// error the turn is refused and the error is shown, so a keyless session can
+// launch but a remote prompt asks for a key. Call before tea.NewProgram.
+func (m Model) WithAuthGate(gate func() error) Model {
+	m.authGate = gate
 	return m
 }
 
@@ -1084,6 +1096,17 @@ func (m Model) startTurn(promptText string) (tea.Model, tea.Cmd) {
 // text; the message sent to the model has any @-referenced files inlined by
 // mentionExpander.
 func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
+	// Auth is gated here, not at startup: a keyless session launches, but a remote
+	// turn needs a key. Refuse the turn with the gate's guidance (e.g. set a key
+	// or /worker_mode to a local worker) instead of failing mid-stream.
+	if m.authGate != nil {
+		if err := m.authGate(); err != nil {
+			m.addEntry(kindError, err.Error())
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
 	sendText := promptText
 	if m.mentionExpander != nil {
 		sendText = m.mentionExpander(promptText)

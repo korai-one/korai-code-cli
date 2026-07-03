@@ -64,6 +64,9 @@ type runOptions struct {
 	autoYes     bool
 	cont        bool
 	resumeID    string
+	// local forces local-worker inference: the session must resolve a co-located
+	// or LAN worker (else startup fails), and no remote API key is required.
+	local bool
 	// localWorkerURL, when set, routes inference straight to a loopback Korai
 	// worker (bypassing the orchestrator). Empty means auto-detect an advertised
 	// worker, then fall back to the networked backend.
@@ -83,6 +86,7 @@ func rootCmd() *cobra.Command {
 		autoYes         bool
 		cont            bool
 		resumeID        string
+		local           bool
 		localWorker     string
 		localWorkerAddr string
 	)
@@ -110,6 +114,7 @@ func rootCmd() *cobra.Command {
 				autoYes:         autoYes,
 				cont:            cont,
 				resumeID:        resumeID,
+				local:           local,
 				localWorkerURL:  localWorker,
 				localWorkerAddr: localWorkerAddr,
 			}
@@ -152,6 +157,8 @@ func rootCmd() *cobra.Command {
 		"resume the most recent session in this directory")
 	root.Flags().StringVar(&resumeID, "resume", "",
 		"resume a saved session by id")
+	root.Flags().BoolVar(&local, "local", false,
+		"require a local/LAN worker for inference and run without any API key")
 	root.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
 	root.Flags().StringVar(&localWorkerAddr, "local-worker-addr", "",
@@ -184,6 +191,13 @@ func runPrint(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	defer sess.close()
+
+	// Auth is gated at the prompt, not at startup: a keyless session can be
+	// assembled, but a remote turn needs a key. Fail before the turn with a clear
+	// message rather than mid-stream.
+	if gerr := sess.authGate(); gerr != nil {
+		return gerr
+	}
 
 	// Headless runs have no interactive prompt: an "ask" decision is denied by
 	// default (safe), or auto-approved when --yes is set.
@@ -252,7 +266,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 	model := tui.New(eng, asker, sess.system, sess.commands).
 		WithVersion(version).
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
-		WithModels(sess.models).WithCost(sess.cost).
+		WithModels(sess.models).WithCost(sess.cost).WithAuthGate(sess.authGate).
 		WithFileFinder(sess.fileFinder).WithMentionExpander(sess.mentionExpander).
 		WithImageAttacher(sess.imageAttacher).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
