@@ -19,6 +19,23 @@ func TestComposeWithoutContext(t *testing.T) {
 	}
 }
 
+func TestComposeHasBehaviorSections(t *testing.T) {
+	t.Parallel()
+
+	got := prompt.Compose("")
+	for _, want := range []string{
+		"# How you operate",
+		"# Doing tasks",
+		"# Acting with care",
+		"# Using your tools",
+		"# Style",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing section %q", want)
+		}
+	}
+}
+
 func TestComposeWithContext(t *testing.T) {
 	t.Parallel()
 
