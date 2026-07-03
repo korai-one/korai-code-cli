@@ -102,6 +102,7 @@ func TestDoneEventCarriesHistory(t *testing.T) {
 	t.Parallel()
 	m := ready(fakeRunner{})
 	m.busy = true
+	m.input.Placeholder = "steer the agent…" // as runTurn sets it while busy
 	dummy := make(chan engine.Event)
 
 	hist := []apiclient.Message{
@@ -116,12 +117,18 @@ func TestDoneEventCarriesHistory(t *testing.T) {
 	if len(m.history) != 1 {
 		t.Errorf("history len = %d, want 1 (carried from DoneEvent)", len(m.history))
 	}
+	// The steering placeholder belongs to the model's turn; once it ends the
+	// prompt must return to its idle text for the user's turn.
+	if m.input.Placeholder != "Ask Korai…" {
+		t.Errorf("placeholder = %q, want the idle prompt after DoneEvent", m.input.Placeholder)
+	}
 }
 
 func TestErrorEventShown(t *testing.T) {
 	t.Parallel()
 	m := ready(fakeRunner{})
 	m.busy = true
+	m.input.Placeholder = "steer the agent…" // as runTurn sets it while busy
 	dummy := make(chan engine.Event)
 
 	tm, _ := m.Update(engineEventMsg{event: engine.ErrorEvent{Err: context.Canceled}, ch: dummy})
@@ -132,6 +139,9 @@ func TestErrorEventShown(t *testing.T) {
 	}
 	if e := lastEntry(m); e.kind != kindError {
 		t.Errorf("entry kind = %v, want error", e.kind)
+	}
+	if m.input.Placeholder != "Ask Korai…" {
+		t.Errorf("placeholder = %q, want the idle prompt after ErrorEvent", m.input.Placeholder)
 	}
 }
 

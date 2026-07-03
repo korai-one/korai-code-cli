@@ -1176,12 +1176,14 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		m.history = ev.Messages
 		m.busy = false
 		m.streaming = false
+		m.input.Placeholder = "Ask Korai…" // the turn is over; steering no longer applies
 		m.refreshViewport()
 		return m, m.saveCmd()
 	case engine.ErrorEvent:
 		m.addEntry(kindError, ev.Err.Error())
 		m.busy = false
 		m.streaming = false
+		m.input.Placeholder = "Ask Korai…" // the turn is over; steering no longer applies
 		m.refreshViewport()
 		return m, nil
 	}
