@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -131,7 +132,7 @@ func TestErrorEventShown(t *testing.T) {
 	m.input.Placeholder = "steer the agent…" // as runTurn sets it while busy
 	dummy := make(chan engine.Event)
 
-	tm, _ := m.Update(engineEventMsg{event: engine.ErrorEvent{Err: context.Canceled}, ch: dummy})
+	tm, _ := m.Update(engineEventMsg{event: engine.ErrorEvent{Err: errors.New("boom")}, ch: dummy})
 	m = tm.(Model)
 
 	if m.busy {
@@ -142,6 +143,72 @@ func TestErrorEventShown(t *testing.T) {
 	}
 	if m.input.Placeholder != "Ask Korai…" {
 		t.Errorf("placeholder = %q, want the idle prompt after ErrorEvent", m.input.Placeholder)
+	}
+}
+
+// TestCanceledErrorSuppressed verifies a cancelled turn (user interrupt) does
+// not surface a red "context canceled" error, but still ends the turn.
+func TestCanceledErrorSuppressed(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+	m.busy = true
+	m.addEntry(kindInfo, "What should Korai do?") // as ctrl+c posts before the event
+	dummy := make(chan engine.Event)
+
+	tm, _ := m.Update(engineEventMsg{event: engine.ErrorEvent{Err: context.Canceled}, ch: dummy})
+	m = tm.(Model)
+
+	if m.busy {
+		t.Error("busy should be false after a cancelled turn")
+	}
+	for _, e := range m.entries {
+		if e.kind == kindError {
+			t.Errorf("cancellation should not add an error entry, got %q", e.text)
+		}
+	}
+}
+
+// TestCtrlCInterruptsDuringTurn checks ctrl+c cancels the running turn and asks
+// what to do next instead of quitting.
+func TestCtrlCInterruptsDuringTurn(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{})
+
+	var canceled bool
+	m.busy = true
+	m.cancel = func() { canceled = true }
+
+	tm, cmd := m.Update(tea.KeyPressMsg{Text: "ctrl+c", Code: 'c', Mod: tea.ModCtrl})
+	m = tm.(Model)
+
+	if !canceled {
+		t.Error("ctrl+c during a turn should cancel it")
+	}
+	if m.quitting {
+		t.Error("ctrl+c during a turn should not quit the app")
+	}
+	if cmd != nil {
+		// tea.Quit is a non-nil command; a nil cmd confirms we did not quit.
+		t.Error("ctrl+c during a turn should not return the quit command")
+	}
+	if e := lastEntry(m); e.kind != kindInfo || e.text != "What should Korai do?" {
+		t.Errorf("last entry = %+v, want info %q", e, "What should Korai do?")
+	}
+}
+
+// TestCtrlCQuitsWhenIdle checks ctrl+c still quits at the idle prompt.
+func TestCtrlCQuitsWhenIdle(t *testing.T) {
+	t.Parallel()
+	m := ready(fakeRunner{}) // not busy
+
+	tm, cmd := m.Update(tea.KeyPressMsg{Text: "ctrl+c", Code: 'c', Mod: tea.ModCtrl})
+	m = tm.(Model)
+
+	if !m.quitting {
+		t.Error("ctrl+c while idle should quit")
+	}
+	if cmd == nil {
+		t.Error("ctrl+c while idle should return the quit command")
 	}
 }
 

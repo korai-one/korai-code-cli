@@ -9,6 +9,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -521,6 +522,17 @@ func (m *Model) relayout() {
 
 func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
+		// During the agent's turn, ctrl+c interrupts the turn instead of quitting:
+		// the user reclaims control and is asked what to do next. Quitting is
+		// reserved for the idle prompt (press it again once the turn has stopped).
+		if m.busy {
+			if m.cancel != nil {
+				m.cancel()
+			}
+			m.addEntry(kindInfo, "What should Korai do?")
+			m.refreshViewport()
+			return m, nil
+		}
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -1180,7 +1192,11 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, m.saveCmd()
 	case engine.ErrorEvent:
-		m.addEntry(kindError, ev.Err.Error())
+		// A cancelled turn is a user interrupt (ctrl+c / esc), already acknowledged
+		// in the transcript — don't also surface it as a red error.
+		if !errors.Is(ev.Err, context.Canceled) {
+			m.addEntry(kindError, ev.Err.Error())
+		}
 		m.busy = false
 		m.streaming = false
 		m.input.Placeholder = "Ask Korai…" // the turn is over; steering no longer applies
