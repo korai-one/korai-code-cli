@@ -36,6 +36,7 @@ type Engine struct {
 	models     *apiclient.ModelSelector
 	usage      UsageRecorder
 	sysSuffix  func() string
+	filter     ToolResultFilter
 	compactFn  CompactFunc
 	compactMax int
 	estimate   func([]apiclient.Message) int
@@ -97,6 +98,14 @@ type CompactFunc func(ctx context.Context, messages []apiclient.Message) ([]apic
 // the apiclient type, never a backend-specific one.
 type UsageRecorder func(model string, usage apiclient.Usage)
 
+// ToolResultFilter transforms a tool's result content just before it is appended
+// to the model's history — the seam the tool-output condenser plugs into to save
+// tokens. It receives the tool name and the full result and returns the
+// (possibly reduced) content the model will see. The UI already received the
+// original result via ToolResultEvent, so a filter never hides output from the
+// user. A nil filter is a no-op.
+type ToolResultFilter func(toolName string, r tool.Result) string
+
 // Option customizes an Engine.
 type Option func(*Engine)
 
@@ -123,6 +132,13 @@ func WithUsageRecorder(r UsageRecorder) Option {
 // return adds nothing.
 func WithSystemSuffix(fn func() string) Option {
 	return func(e *Engine) { e.sysSuffix = fn }
+}
+
+// WithToolResultFilter attaches a filter applied to every tool result before it
+// is appended to the model's history. It does not affect the ToolResultEvent the
+// UI receives, so the user still sees the full output. A nil filter disables it.
+func WithToolResultFilter(f ToolResultFilter) Option {
+	return func(e *Engine) { e.filter = f }
 }
 
 // WithAutoCompact enables automatic compaction: before a turn, if the history's
@@ -306,9 +322,15 @@ func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCom
 		assistantBlocks = append(assistantBlocks, apiclient.ToolCallBlock(call))
 
 		result := e.dispatchTool(ctx, call, ch)
+		// Condense the model-facing copy only; the UI already got the full
+		// output via the ToolResultEvent sent inside dispatchTool.
+		content := result.Content
+		if e.filter != nil {
+			content = e.filter(call.Name, result)
+		}
 		resultBlocks = append(resultBlocks, apiclient.ToolResultBlock{
 			ToolCallID: call.ID,
-			Content:    result.Content,
+			Content:    content,
 			IsError:    result.IsError,
 		})
 	}

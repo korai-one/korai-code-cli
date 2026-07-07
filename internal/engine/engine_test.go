@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/invopop/jsonschema"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/condense"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
@@ -217,6 +219,102 @@ func TestAutoCompactFires(t *testing.T) {
 	if compacted == nil || compacted.Before != 3 || compacted.After != 1 {
 		t.Errorf("CompactedEvent = %+v, want before=3 after=1", compacted)
 	}
+}
+
+// fixedOutputTool is a mock tool returning a fixed, verbose output so the
+// tool-result filter has something to condense.
+type fixedOutputTool struct {
+	name    string
+	content string
+}
+
+func (f fixedOutputTool) Name() string                       { return f.name }
+func (f fixedOutputTool) Description(context.Context) string { return "returns fixed output" }
+func (f fixedOutputTool) InputSchema() *jsonschema.Schema    { return tool.Schema[struct{}]() }
+func (f fixedOutputTool) ReadOnly() bool                     { return true }
+func (f fixedOutputTool) ConcurrencySafe() bool              { return true }
+func (f fixedOutputTool) CheckPermission(context.Context, json.RawMessage, perm.Mode) perm.Decision {
+	return perm.DecisionAllow
+}
+func (f fixedOutputTool) Execute(context.Context, json.RawMessage, tool.Deps) (tool.Result, error) {
+	return tool.Result{Content: f.content}, nil
+}
+
+// TestToolResultFilterCondensesHistoryNotUI verifies the load-bearing property
+// of the condenser seam: the model's history copy of a tool result is condensed
+// (saving tokens) while the UI's ToolResultEvent keeps the full output.
+func TestToolResultFilterCondensesHistoryNotUI(t *testing.T) {
+	t.Parallel()
+
+	// 300 identical lines: the default dedup collapses them to one counted line.
+	big := strings.Repeat("spam\n", 300)
+
+	client := &mockClient{turns: [][]apiclient.Event{
+		{
+			apiclient.ToolCallCompleteEvent{ID: "c1", Name: "Bash", Input: json.RawMessage(`{}`)},
+			apiclient.MessageCompleteEvent{StopReason: "tool_use"},
+		},
+		{
+			apiclient.TextDeltaEvent{Text: "done"},
+			apiclient.MessageCompleteEvent{StopReason: "end_turn"},
+		},
+	}}
+
+	registry := tool.NewRegistry()
+	registry.Register(fixedOutputTool{name: "Bash", content: big})
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
+
+	filter := func(name string, r tool.Result) string {
+		return condense.New(condense.Config{}).Apply(name, r.Content)
+	}
+	eng := engine.New(client, registry, permEngine, tool.Deps{}, engine.WithToolResultFilter(filter))
+
+	var uiResult engine.ToolResultEvent
+	var history []apiclient.Message
+	for evt := range eng.Run(context.Background(), []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "run"}}},
+	}, "") {
+		switch v := evt.(type) {
+		case engine.ToolResultEvent:
+			uiResult = v
+		case engine.DoneEvent:
+			history = v.Messages
+		case engine.ErrorEvent:
+			t.Fatalf("engine error: %v", v.Err)
+		}
+	}
+
+	// The UI event keeps the full, untouched output.
+	if uiResult.Result.Content != big {
+		t.Errorf("UI result was altered: got %d bytes, want %d", len(uiResult.Result.Content), len(big))
+	}
+
+	// The model's history holds the condensed copy.
+	got := findToolResult(t, history)
+	if got == big {
+		t.Fatal("model history was not condensed")
+	}
+	if !strings.Contains(got, "(×300)") {
+		t.Errorf("condensed content missing dedup marker: %q", got)
+	}
+	if len(got) >= len(big) {
+		t.Errorf("condensed content not smaller: got %d want < %d", len(got), len(big))
+	}
+}
+
+// findToolResult returns the content of the first ToolResultBlock in history,
+// failing the test if there is none.
+func findToolResult(t *testing.T, history []apiclient.Message) string {
+	t.Helper()
+	for _, m := range history {
+		for _, b := range m.Content {
+			if trb, ok := b.(apiclient.ToolResultBlock); ok {
+				return trb.Content
+			}
+		}
+	}
+	t.Fatal("no ToolResultBlock in history")
+	return ""
 }
 
 // TestAutoCompactSkippedUnderThreshold verifies no compaction below the threshold.

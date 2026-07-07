@@ -14,6 +14,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/compact"
+	"github.com/Nevaero/korai-code-cli/internal/condense"
 	"github.com/Nevaero/korai-code-cli/internal/config"
 	appctx "github.com/Nevaero/korai-code-cli/internal/context"
 	"github.com/Nevaero/korai-code-cli/internal/cost"
@@ -52,6 +53,7 @@ type assembled struct {
 	cost      *cost.Tracker
 	compactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
 	hooks     engine.HookFunc
+	condense  engine.ToolResultFilter
 	rules     perm.Rules
 	system    string
 	deps      tool.Deps
@@ -372,6 +374,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		cost:      costTracker,
 		compactor: compactor,
 		hooks:     buildHooks(settings.Hooks),
+		condense:  buildCondenser(settings.Condense),
 		rules:     rules,
 		system:    system,
 		deps:      deps,
@@ -540,6 +543,27 @@ func buildHooks(specs map[string][]config.HookSpec) engine.HookFunc {
 		}
 	}
 	return hook.New(converted).Fire
+}
+
+// buildCondenser turns the condense settings into an engine tool-result filter.
+// Condensing is on by default (nil settings): it only shrinks verbose output
+// from targeted tools and never hides anything from the terminal. It returns nil
+// only when explicitly disabled, so the engine then skips filtering entirely.
+func buildCondenser(cs *config.CondenseSettings) engine.ToolResultFilter {
+	if cs != nil && cs.Enabled != nil && !*cs.Enabled {
+		return nil
+	}
+	cfg := condense.Config{}
+	if cs != nil {
+		cfg.Tools = cs.Tools
+		cfg.MaxLines = cs.MaxLines
+		cfg.HeadLines = cs.HeadLines
+		cfg.TailLines = cs.TailLines
+	}
+	f := condense.New(cfg)
+	return func(toolName string, r tool.Result) string {
+		return f.Apply(toolName, r.Content)
+	}
 }
 
 // connectMCPServers connects to each configured MCP server and registers its

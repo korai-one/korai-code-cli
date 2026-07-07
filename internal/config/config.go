@@ -26,6 +26,27 @@ type Settings struct {
 	// (lint, tests, build). Each runs in the working directory; a non-zero exit
 	// is reported as a failed check. Empty means no checks are configured.
 	Checks []string `json:"checks,omitempty"`
+	// Condense controls reduction of verbose tool output (dedup, truncation)
+	// before it enters the model's context, saving tokens. The full output still
+	// reaches the terminal. nil enables it with defaults; set enabled=false to
+	// turn it off.
+	Condense *CondenseSettings `json:"condense,omitempty"`
+}
+
+// CondenseSettings configures tool-output condensing (see Settings.Condense).
+// Zero-valued numeric fields fall back to the condense package defaults.
+type CondenseSettings struct {
+	// Enabled turns condensing on or off. nil is treated as true.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Tools lists the tool names whose output is condensed. Empty means the
+	// built-in default (Bash only).
+	Tools []string `json:"tools,omitempty"`
+	// MaxLines is the line count above which output is head/tail-truncated.
+	MaxLines int `json:"maxLines,omitempty"`
+	// HeadLines and TailLines are how many lines to keep at each end when
+	// truncating.
+	HeadLines int `json:"headLines,omitempty"`
+	TailLines int `json:"tailLines,omitempty"`
 }
 
 // HookSpec is one shell command to run for a lifecycle event. Plain data; the
@@ -95,6 +116,12 @@ func Merge(base, override Settings) Settings {
 	merged.MCPServers = servers
 
 	merged.Hooks = mergeHooks(base.Hooks, override.Hooks)
+
+	// Condense is replaced wholesale when the override sets it, so a later layer
+	// can flip it on or off without inheriting the earlier layer's tuning.
+	if override.Condense != nil {
+		merged.Condense = override.Condense
+	}
 
 	return merged
 }
