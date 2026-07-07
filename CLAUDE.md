@@ -71,6 +71,18 @@ Backends that implement `apiclient.Client` today:
   home/LAN inference server over **TCP** (`NewLocalWorkerClientTCP`, with an
   optional shared token).
 
+Two backend-shaped truths worth knowing:
+
+1. Korai hosts open-weight models **not trained for structured tool calls**, so
+   tool use rides a **text-fence dialect** (`<tool:NAME>{json}</tool>`) rendered
+   into the system prompt and parsed back out in `fence.go`. The engine above the
+   boundary never sees fences — it works in structured `ToolCallBlock`s.
+2. The Korai HTTP path is **buffered, not streamed**: `KoraiClient` calls
+   `ChatComplete` once and *replays* the reply as the same event sequence a
+   streaming backend would emit. Only the direct binary channel
+   (`LocalWorkerClient`) truly streams tokens and returns structured tool-call
+   frames (no fence round-trip on the response).
+
 When you add anything that consumes backend data (tokens, model, streaming,
 images), route it through `apiclient`'s own types — do not leak SDK types upward.
 
@@ -90,10 +102,14 @@ internal/
   engine/             # the agent loop: context → stream → tool loop → repeat.
                       #   UI-agnostic; emits events on <-chan engine.Event.
                       #   Options: WithHooks, WithModelSelector, WithUsageRecorder,
-                      #   WithSystemSuffix, WithAutoCompact. Enqueue() for mid-turn steering.
+                      #   WithSystemSuffix, WithAutoCompact, WithToolResultFilter.
+                      #   Enqueue() for mid-turn steering.
   apiclient/          # THE inference boundary (strangler fig). Own types; Client
-                      #   interface; KoraiClient, LocalWorkerClient;
-                      #   ModelSelector; Usage; fenced-tool-call parsing (fence.go).
+                      #   interface; KoraiClient (buffered + fence dialect),
+                      #   LocalWorkerClient (streams); ClientSelector; ModelSelector.
+  condense/           # deterministic tool-output reducer (adjacent-run dedup +
+                      #   head/tail truncate) for the model-facing copy only;
+                      #   wired via engine WithToolResultFilter (Bash by default).
   tool/               # frozen Tool interface + Registry + Schema[T] helper + Deps (WorkDir, LSP).
   tools/              # one package per tool (see below). tools.go = RegisterAll.
   perm/               # permission engine: Mode, Decision, Rules, Asker, Engine.
@@ -104,9 +120,14 @@ internal/
   mcp/                # MCP client; adapts external server tools onto tool.Tool.
   memory/             # file-backed, capped persistent memory store.
   compact/            # conversation summarization via apiclient.Client.
-  cost/               # token tracking + USD estimate (prices.go is swappable).
+  cost/               # token tracking + USD estimate. NOTE: prices.go still keys
+                      #   on Anthropic-era model names; usage is recorded under the
+                      #   Korai aliases (auto/fast/…), so /cost mostly shows "(no
+                      #   price)". Real Korai pricing is a TODO.
   config/             # settings hierarchy (defaults < user < project < local < flags);
-                      #   adds LSP toggle and Checks (RunChecks commands).
+                      #   Model/MCP env resolve ${ENV}/$(cmd) at load. (KNOWN BUG:
+                      #   Merge drops `lsp` and `checks` — they don't take effect
+                      #   from config files yet.)
   context/            # system-context assembly (workdir, git status, date, AGENTS/CLAUDE.md).
   prompt/             # agent system prompt + Compose with env context + PlanNote.
   session/            # per-turn conversation persistence: SQLite store (sqlite.go) with
@@ -164,6 +185,15 @@ LSP diagnostics to their result (via `tool.Deps.LSP`) so the model self-corrects
 
 **To add a tool:** copy `internal/tools/readfile/` as the template, then add it to
 `tools.go` (or register it per-session in `cmd/session.go` if it needs runtime deps).
+
+**Current tool caveats (from the code audit):** `WebSearch` is a registered
+**stub** — no provider is wired (`WithSearcher` is only used in tests), so it
+always returns "not available." `ReadFile` is bare-bones (no line numbers /
+offset-limit / truncation / image support) — the biggest lever for edit accuracy.
+`Bash` hardcodes `bash -c` (needs bash on PATH, even on Windows; unlike `RunChecks`
+which is cross-platform) and does not cap output. `Grep`/`Glob` are gitignore-blind
+(they skip only `.git`). `editmatch` (fuzzy Edit) and `ApplyPatch` are, by contrast,
+genuinely strong.
 
 ### Permissions (`internal/perm`)
 
@@ -270,8 +300,23 @@ channels; `korai serve` (WebSocket engine for web/desktop clients); SQLite sessi
 persistence with JSONL fallback; shadow-git snapshots (`/revert`, `/snapshots`);
 language-server diagnostics; tree-sitter `RepoMap`; `ApplyPatch` + fuzzy `Edit`;
 `RunChecks`; on-demand LSP query tools; `TodoWrite`; image/vision input; and
-mid-turn steering. Deferred with rationale (`AGENTS.md` §7): OAuth (belongs to the
-Korai SDK).
+mid-turn steering.
+
+**The Anthropic backend and its SDK were removed** — inference is Korai-only +
+local/LAN workers. Recent additions on top: a tool-output condenser
+(`WithToolResultFilter` / `internal/condense`), a context-usage meter in the TUI
+status line, a `--print --output-format json` (JSONL) headless mode,
+`${ENV}`/`$(command)` resolution in config values, and a guard that fails tool
+calls from a token-truncated turn. Deferred (`AGENTS.md` §7): OAuth (belongs to
+the Korai SDK).
+
+**Known rough edges surfaced by the code audit (candidate fixes, not yet done):**
+the truncation guard matches `stopReason == "max_tokens"`, but both live backends
+report OpenAI-style `"length"` — so it is currently dead; `config.Merge` drops
+`lsp`/`checks`; `context.Build` labels project instructions "AGENTS.md" even when
+it read `CLAUDE.md`; env/git/date context is captured once at assembly and never
+refreshed across turns; `compact.EstimateTokens` ignores images; snapshots are
+filesystem-only and their log is lost on resume.
 
 The pipeline is exercised by mock-client golden/`teatest` tests plus an assembly
 smoke test. Live-model verification depends on a backend/key being present in the
