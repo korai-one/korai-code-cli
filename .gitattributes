@@ -1,0 +1,18 @@
+# Enforce LF line endings in the repository and on checkout for every text file,
+# regardless of each contributor's core.autocrlf setting. This is the permanent
+# fix for the CRLF churn that made gofmt and golangci-lint flag files on Windows
+# checkouts.
+* text=auto eol=lf
+
+# Binary assets: never apply text or end-of-line conversion.
+*.exe binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.gz binary
+*.zip binary
+*.wasm binary
+*.db binary
