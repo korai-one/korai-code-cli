@@ -5,6 +5,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -174,11 +175,24 @@ func DefaultPaths(home, cwd string) Loader {
 	}
 }
 
-// Load resolves the settings hierarchy, starting from Defaults and merging the
-// user, project, and local files in that order of increasing precedence. A
-// missing file is skipped silently; a file that exists but cannot be parsed is
-// an error wrapped with %w and the offending path.
+// Load resolves the settings hierarchy without a caller context; it is
+// equivalent to LoadContext(context.Background()). See LoadContext for the merge
+// semantics and the value-field expansion applied to the result.
 func (l Loader) Load() (Settings, error) {
+	return l.LoadContext(context.Background())
+}
+
+// LoadContext resolves the settings hierarchy, starting from Defaults and
+// merging the user, project, and local files in that order of increasing
+// precedence, then expands shell-style references (${VAR}, $VAR, $(command)) in
+// the merged result's value fields. A missing file is skipped silently; a file
+// that exists but cannot be parsed is an error wrapped with %w and the offending
+// path. ctx bounds and cancels any command substitution spawned during
+// expansion. Only the value fields where substitution is meaningful and safe are
+// expanded — Model and each MCPServers[*].Env value; see resolveSettings and
+// ResolveValue for the exact scope and token syntax. A command substitution that
+// fails to run is returned as an error.
+func (l Loader) LoadContext(ctx context.Context) (Settings, error) {
 	resolved := Defaults()
 	for _, path := range []string{l.UserPath, l.ProjectPath, l.LocalPath} {
 		s, ok, err := readFile(path)
@@ -190,7 +204,7 @@ func (l Loader) Load() (Settings, error) {
 		}
 		resolved = Merge(resolved, s)
 	}
-	return resolved, nil
+	return resolveSettings(ctx, resolved)
 }
 
 // readFile reads and parses a single settings file. It reports ok=false (with a

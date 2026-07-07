@@ -220,7 +220,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 	home, _ := os.UserHomeDir() // empty home just means no user-level settings
 
-	settings, err := config.DefaultPaths(home, wd).Load()
+	settings, err := config.DefaultPaths(home, wd).LoadContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading settings: %w", err)
 	}
