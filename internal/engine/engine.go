@@ -227,6 +227,26 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 			return history, nil
 		}
 
+		// If the model stopped because it hit the output token limit, its tool
+		// calls may have silently truncated arguments — executing them would be a
+		// correctness bug. Fail them all without running, record the error
+		// results, and loop so the model sees the failure and can retry.
+		if turn.stopReason == "max_tokens" {
+			slog.Warn("response truncated: hit max output tokens")
+			assistantContent, results := e.failTruncatedCalls(turn.toolCalls, ch)
+			if turn.text != "" {
+				assistantContent = append(
+					[]apiclient.ContentBlock{apiclient.TextBlock{Text: turn.text}},
+					assistantContent...,
+				)
+			}
+			history = append(history,
+				apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
+				apiclient.Message{Role: apiclient.RoleUser, Content: results},
+			)
+			continue
+		}
+
 		// Execute all tool calls and collect results.
 		assistantContent, results, err := e.executeTools(ctx, turn.toolCalls, ch)
 		if err != nil {
@@ -310,6 +330,31 @@ func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<
 	}
 	res.text = text.String()
 	return res, nil
+}
+
+// truncatedToolCallMessage is the error surfaced for each tool call the engine
+// refuses to run because the model's response was cut off at the output token
+// limit before its arguments were complete.
+const truncatedToolCallMessage = "tool call not executed: response truncated at the output token limit before arguments were complete; retry"
+
+// failTruncatedCalls records an error result for each tool call from a turn the
+// backend truncated at the output token limit, without executing any of them. It
+// emits a ToolResultEvent per call (reusing the blocked path) so the UI reflects
+// the failure, and mirrors executeTools' return shape so the caller appends
+// history identically. The synthetic errors bypass the tool-result filter.
+func (e *Engine) failTruncatedCalls(calls []apiclient.ToolCallCompleteEvent, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock) {
+	assistantBlocks := make([]apiclient.ContentBlock, 0, len(calls))
+	resultBlocks := make([]apiclient.ContentBlock, 0, len(calls))
+	for _, call := range calls {
+		assistantBlocks = append(assistantBlocks, apiclient.ToolCallBlock(call))
+		result := e.blocked(ch, call.Name, truncatedToolCallMessage)
+		resultBlocks = append(resultBlocks, apiclient.ToolResultBlock{
+			ToolCallID: call.ID,
+			Content:    result.Content,
+			IsError:    result.IsError,
+		})
+	}
+	return assistantBlocks, resultBlocks
 }
 
 // executeTools runs each tool call, gating on permissions, and returns the

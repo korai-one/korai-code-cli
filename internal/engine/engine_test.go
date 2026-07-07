@@ -317,6 +317,102 @@ func findToolResult(t *testing.T, history []apiclient.Message) string {
 	return ""
 }
 
+// recordingTool is a mock tool that records whether its Execute ran, so a test
+// can assert the engine never executed it.
+type recordingTool struct {
+	name     string
+	executed *bool
+}
+
+func (r recordingTool) Name() string                       { return r.name }
+func (r recordingTool) Description(context.Context) string { return "records execution" }
+func (r recordingTool) InputSchema() *jsonschema.Schema    { return tool.Schema[struct{}]() }
+func (r recordingTool) ReadOnly() bool                     { return true }
+func (r recordingTool) ConcurrencySafe() bool              { return true }
+func (r recordingTool) CheckPermission(context.Context, json.RawMessage, perm.Mode) perm.Decision {
+	return perm.DecisionAllow
+}
+func (r recordingTool) Execute(context.Context, json.RawMessage, tool.Deps) (tool.Result, error) {
+	*r.executed = true
+	return tool.Result{Content: "should not run"}, nil
+}
+
+// TestMaxTokensToolCallNotExecuted verifies the truncation guard: when the model
+// stops at the output token limit ("max_tokens") while emitting tool calls, the
+// engine must not execute them (their arguments may be silently truncated).
+// Instead it records an error tool result per call, emits a matching
+// ToolResultEvent, and loops so the model can retry.
+func TestMaxTokensToolCallNotExecuted(t *testing.T) {
+	t.Parallel()
+
+	client := &mockClient{turns: [][]apiclient.Event{
+		// Turn 1: model emits a tool call but was cut off at the token limit.
+		{
+			apiclient.ToolCallCompleteEvent{ID: "c1", Name: "DoStuff", Input: json.RawMessage(`{}`)},
+			apiclient.MessageCompleteEvent{StopReason: "max_tokens"},
+		},
+		// Turn 2: after seeing the failure, the model produces a final answer.
+		{
+			apiclient.TextDeltaEvent{Text: "retried"},
+			apiclient.MessageCompleteEvent{StopReason: "end_turn"},
+		},
+	}}
+
+	var executed bool
+	registry := tool.NewRegistry()
+	registry.Register(recordingTool{name: "DoStuff", executed: &executed})
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
+	eng := engine.New(client, registry, permEngine, tool.Deps{})
+
+	var toolResult engine.ToolResultEvent
+	var sawStart bool
+	var history []apiclient.Message
+	for evt := range eng.Run(context.Background(), []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "go"}}},
+	}, "") {
+		switch v := evt.(type) {
+		case engine.ToolStartEvent:
+			sawStart = true
+		case engine.ToolResultEvent:
+			toolResult = v
+		case engine.DoneEvent:
+			history = v.Messages
+		case engine.ErrorEvent:
+			t.Fatalf("engine error: %v", v.Err)
+		}
+	}
+
+	// (a) the tool must never have executed.
+	if executed {
+		t.Error("tool Execute ran despite the truncated (max_tokens) response")
+	}
+	if sawStart {
+		t.Error("tool should not start when the response was truncated")
+	}
+
+	// (c) an error ToolResultEvent was emitted for the call.
+	if toolResult.Name != "DoStuff" || !toolResult.Result.IsError {
+		t.Errorf("ToolResultEvent = %+v, want an IsError result for DoStuff", toolResult)
+	}
+
+	// (b) the post-turn history holds an error ToolResultBlock for the call.
+	var found *apiclient.ToolResultBlock
+	for _, m := range history {
+		for _, b := range m.Content {
+			if trb, ok := b.(apiclient.ToolResultBlock); ok && trb.ToolCallID == "c1" {
+				trb := trb
+				found = &trb
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("no ToolResultBlock for the truncated call in history")
+	}
+	if !found.IsError {
+		t.Errorf("history ToolResultBlock IsError = false, want true (content: %q)", found.Content)
+	}
+}
+
 // TestAutoCompactSkippedUnderThreshold verifies no compaction below the threshold.
 func TestAutoCompactSkippedUnderThreshold(t *testing.T) {
 	t.Parallel()
