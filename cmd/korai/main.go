@@ -64,6 +64,9 @@ type runOptions struct {
 	autoYes     bool
 	cont        bool
 	resumeID    string
+	// outputFormat selects the headless --print output encoding: "text" (the
+	// human-readable stream) or "json" (one engine event per line, JSONL).
+	outputFormat string
 	// local forces local-worker inference: the session must resolve a co-located
 	// or LAN worker (else startup fails), and no remote API key is required.
 	local bool
@@ -86,6 +89,7 @@ func rootCmd() *cobra.Command {
 		autoYes         bool
 		cont            bool
 		resumeID        string
+		outputFormat    string
 		local           bool
 		localWorker     string
 		localWorkerAddr string
@@ -106,6 +110,9 @@ func rootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if verr := validateOutputFormat(outputFormat); verr != nil {
+				return verr
+			}
 			opts := runOptions{
 				model:           model,
 				modelSet:        cmd.Flags().Changed("model"),
@@ -114,6 +121,7 @@ func rootCmd() *cobra.Command {
 				autoYes:         autoYes,
 				cont:            cont,
 				resumeID:        resumeID,
+				outputFormat:    outputFormat,
 				local:           local,
 				localWorkerURL:  localWorker,
 				localWorkerAddr: localWorkerAddr,
@@ -153,6 +161,8 @@ func rootCmd() *cobra.Command {
 		"permission mode: default | plan | acceptEdits | bypassPermissions")
 	root.Flags().BoolVar(&autoYes, "yes", false,
 		"auto-approve prompts that would otherwise be denied in headless mode")
+	root.Flags().StringVar(&outputFormat, "output-format", outputFormatText,
+		"headless --print output format: text | json (json emits one engine event per line as JSONL)")
 	root.Flags().BoolVarP(&cont, "continue", "c", false,
 		"resume the most recent session in this directory")
 	root.Flags().StringVar(&resumeID, "resume", "",
@@ -221,17 +231,38 @@ func runPrint(ctx context.Context, opts runOptions) error {
 
 	slog.Debug("starting headless turn", "permission_mode", sess.modes.Get().String())
 
+	// In json mode every engine event is emitted as one compact JSON object per
+	// line (JSONL) on stdout; the text-mode prints are suppressed so the stream
+	// stays machine-parseable.
+	jsonMode := opts.outputFormat == outputFormatJSON
+
 	var finalHistory []apiclient.Message
 	for evt := range eng.Run(ctx, messages, sess.system) {
+		if jsonMode {
+			line, encErr := encodeEvent(evt)
+			if encErr != nil {
+				return encErr
+			}
+			// os.Stdout is unbuffered, so each Write flushes the line immediately.
+			if _, werr := os.Stdout.Write(append(line, '\n')); werr != nil {
+				return werr
+			}
+		}
 		switch v := evt.(type) {
 		case engine.TextEvent:
-			fmt.Print(v.Text)
+			if !jsonMode {
+				fmt.Print(v.Text)
+			}
 		case engine.CompactedEvent:
-			fmt.Fprintf(os.Stderr, "[auto-compacted: %d → %d messages]\n", v.Before, v.After)
+			if !jsonMode {
+				fmt.Fprintf(os.Stderr, "[auto-compacted: %d → %d messages]\n", v.Before, v.After)
+			}
 		case engine.ToolStartEvent:
-			fmt.Fprintf(os.Stderr, "\n[tool: %s]\n", v.Name)
+			if !jsonMode {
+				fmt.Fprintf(os.Stderr, "\n[tool: %s]\n", v.Name)
+			}
 		case engine.ToolResultEvent:
-			if v.Result.IsError {
+			if !jsonMode && v.Result.IsError {
 				fmt.Fprintf(os.Stderr, "[tool error: %s]\n", v.Result.Content)
 			}
 		case engine.DoneEvent:
@@ -240,7 +271,9 @@ func runPrint(ctx context.Context, opts runOptions) error {
 			return v.Err
 		}
 	}
-	fmt.Println()
+	if !jsonMode {
+		fmt.Println()
+	}
 	if finalHistory != nil {
 		sess.saver(sess.sessionID, sess.sessionStart, finalHistory)
 	}
