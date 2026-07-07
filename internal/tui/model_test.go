@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,53 @@ func TestDoneEventCarriesHistory(t *testing.T) {
 	// prompt must return to its idle text for the user's turn.
 	if m.input.Placeholder != "Ask Korai…" {
 		t.Errorf("placeholder = %q, want the idle prompt after DoneEvent", m.input.Placeholder)
+	}
+}
+
+// TestContextMeter checks the context-usage segment of the status line: it is
+// hidden on an empty session, shows the right percentage of the compaction
+// threshold, and applies the muted/warning/error style at the 70% and 90%
+// boundaries. Rendered bytes are compared against the same style's own render,
+// so the assertion holds whether or not the test terminal has color.
+func TestContextMeter(t *testing.T) {
+	t.Parallel()
+	base := ready(fakeRunner{})
+
+	// An empty session shows no meter (no "ctx 0%").
+	if got := base.contextSegment(); got != "" {
+		t.Errorf("contextSegment on empty session = %q, want empty", got)
+	}
+	if strings.Contains(base.statusLine(), "ctx ") {
+		t.Errorf("statusLine on empty session should not show a ctx meter: %q", base.statusLine())
+	}
+
+	cases := []struct {
+		name   string
+		tokens int
+		pct    int
+		render func(...string) string
+	}{
+		// 120_000 is compact.DefaultThreshold, so tokens = pct% of it.
+		{"muted below 70", 60_000, 50, base.styles.status.Render},
+		{"warn at exactly 70", 84_000, 70, base.styles.ctxWarn.Render},
+		{"warn at exactly 90", 108_000, 90, base.styles.ctxWarn.Render},
+		{"error above 90", 120_000, 100, base.styles.errorText.Render},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := base
+			m.contextTokens = tc.tokens
+
+			wantText := fmt.Sprintf("ctx %d%%", tc.pct)
+			if got := m.contextSegment(); got != tc.render(wantText) {
+				t.Errorf("contextSegment(%d tokens) = %q, want %q", tc.tokens, got, tc.render(wantText))
+			}
+			// The plain "ctx NN%" text must survive into the full status line.
+			if s := m.statusLine(); !strings.Contains(s, wantText) {
+				t.Errorf("statusLine = %q, want it to contain %q", s, wantText)
+			}
+		})
 	}
 }
 

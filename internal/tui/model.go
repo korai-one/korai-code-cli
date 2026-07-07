@@ -23,6 +23,7 @@ import (
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/Nevaero/korai-code-cli/internal/compact"
 	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -69,6 +70,12 @@ type Model struct {
 	history   []apiclient.Message
 	entries   []entry
 	streaming bool // an assistant entry is currently being appended to
+
+	// contextTokens caches the estimated token size of history, refreshed
+	// whenever history changes. Drives the context-usage meter in the status
+	// line (how close the session is to an auto-compact). Zero on an empty
+	// session, which hides the meter.
+	contextTokens int
 
 	input    textinput.Model
 	spinner  spinner.Model
@@ -293,8 +300,16 @@ func (m Model) WithSession(id string, created time.Time, history []apiclient.Mes
 	m.sessionID = id
 	m.sessionStart = created
 	m.history = history
+	m.recomputeContext()
 	m.entries = entriesFromMessages(history)
 	return m
+}
+
+// recomputeContext refreshes the cached context-size estimate from the current
+// history so the status-line meter reflects how close the session is to an
+// auto-compact. Call after any change to m.history.
+func (m *Model) recomputeContext() {
+	m.contextTokens = compact.EstimateTokens(m.history)
 }
 
 // Init starts the input cursor blink and begins listening for permission and
@@ -361,6 +376,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addEntry(kindError, "compaction failed: "+msg.err.Error())
 		} else {
 			m.history = msg.history
+			m.recomputeContext()
 			m.addEntry(kindInfo, fmt.Sprintf("compacted; %d messages retained", len(msg.history)))
 		}
 		return m, nil
@@ -377,6 +393,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionID = msg.id
 		m.sessionStart = msg.created
 		m.history = msg.messages
+		m.recomputeContext()
 		m.entries = entriesFromMessages(msg.messages)
 		m.addEntry(kindInfo, fmt.Sprintf("resumed session %s (%d messages)", msg.id, len(msg.messages)))
 		m.refreshViewport()
@@ -965,6 +982,7 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 	case command.Clear:
 		m.entries = nil
 		m.history = nil
+		m.recomputeContext()
 		m.refreshViewport()
 		return m, nil
 	case command.Quit:
@@ -1186,6 +1204,7 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		m.addEntry(kindInfo, fmt.Sprintf("auto-compacted context: %d → %d messages", ev.Before, ev.After))
 	case engine.DoneEvent:
 		m.history = ev.Messages
+		m.recomputeContext()
 		m.busy = false
 		m.streaming = false
 		m.input.Placeholder = "Ask Korai…" // the turn is over; steering no longer applies
@@ -1510,7 +1529,9 @@ func (m Model) renderSearch() string {
 	return box + meta
 }
 
-// statusLine renders the bottom status: active model and token usage so far.
+// statusLine renders the bottom status: active model, token usage so far, and a
+// context-usage meter. The meter carries its own threshold color, so it is
+// appended after the muted base segment rather than folded into it.
 func (m Model) statusLine() string {
 	var parts []string
 	if m.models != nil {
@@ -1521,10 +1542,39 @@ func (m Model) statusLine() string {
 			parts = append(parts, fmt.Sprintf("↑%s ↓%s tok", humanCount(in), humanCount(out)))
 		}
 	}
-	if len(parts) == 0 {
+	ctx := m.contextSegment()
+	if len(parts) == 0 && ctx == "" {
 		return ""
 	}
-	return m.styles.status.Render(strings.Join(parts, " · "))
+	line := m.styles.status.Render(strings.Join(parts, " · "))
+	if ctx != "" {
+		if line != "" {
+			line += m.styles.status.Render(" · ")
+		}
+		line += ctx
+	}
+	return line
+}
+
+// contextSegment renders the context-usage meter ("ctx 42%"): the estimated
+// history size as a percentage of the auto-compaction threshold, colored to
+// warn as a compact approaches (muted under 70%, warning 70–90%, error above
+// 90%). It returns "" when the session has no history yet, so an empty session
+// shows no meter.
+func (m Model) contextSegment() string {
+	if m.contextTokens <= 0 {
+		return ""
+	}
+	pct := m.contextTokens * 100 / compact.DefaultThreshold
+	text := fmt.Sprintf("ctx %d%%", pct)
+	switch {
+	case pct > 90:
+		return m.styles.errorText.Render(text)
+	case pct >= 70:
+		return m.styles.ctxWarn.Render(text)
+	default:
+		return m.styles.status.Render(text)
+	}
 }
 
 // humanCount formats a token count compactly (1.2k, 3.4M).
