@@ -12,9 +12,9 @@ import (
 )
 
 // KoraiClient implements Client against the Korai P2P inference network via
-// korai-sdk-go. It is the sibling of AnthropicClient and the eventual default
-// backend. As with AnthropicClient, no korai.* type crosses this package
-// boundary: everything is converted to apiclient's own types at the edge.
+// korai-sdk-go. It is the default networked backend. No korai.* type crosses
+// this package boundary: everything is converted to apiclient's own types at
+// the edge.
 //
 // Tool use: Korai hosts open-weight models that are not trained for OpenAI
 // structured tool calls, and the whole Korai stack — the orchestrator's tool
@@ -131,9 +131,9 @@ func (c *KoraiClient) runBuffered(ctx context.Context, req korai.ChatRequest, ch
 
 // sendKorai delivers e on ch, blocking until the consumer reads it or ctx is
 // cancelled. It returns false if ctx was cancelled, so callers stop emitting.
-// Unlike apiclient.send (used by the Anthropic streaming path, where dropping a
-// best-effort delta is tolerable), the buffered path must not drop events — a
-// lost ToolCallCompleteEvent would silently break the agent loop.
+// The buffered path must not drop events — a lost ToolCallCompleteEvent would
+// silently break the agent loop — so it blocks rather than doing a best-effort
+// non-blocking send.
 func sendKorai(ctx context.Context, ch chan<- Event, e Event) bool {
 	select {
 	case ch <- e:

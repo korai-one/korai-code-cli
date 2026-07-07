@@ -8,7 +8,7 @@ A terminal-based AI coding agent built to run on the **Korai SDK** — a decentr
 
 `korai` is a coding agent CLI written in Go. It drives an LLM tool-calling loop that can read and edit files, run shell commands, search codebases, remember facts across sessions, and coordinate multi-agent tasks — all from an interactive terminal UI or in headless `--print` mode.
 
-The inference backend sits behind a strict **strangler-fig boundary** (`internal/apiclient`): the agent talks only to an `apiclient.Client` interface and never to a vendor SDK directly. Today that interface is implemented against the Anthropic API; every call site is tagged `// TODO KORAI SDK`, and swapping in a `KoraiClient` — so requests are encrypted end-to-end and routed across the decentralized **Korai P2P network** instead of a single-operator bottleneck — touches nothing above the boundary.
+The inference backend sits behind a strict **strangler-fig boundary** (`internal/apiclient`): the agent talks only to an `apiclient.Client` interface and never to a vendor SDK directly. That interface is implemented by `KoraiClient` — so requests are encrypted end-to-end and routed across the decentralized **Korai P2P network** instead of a single-operator bottleneck — and by local/LAN worker clients, none of whose SDK types cross the boundary. Korai runs on the Korai SDK; there is no third-party API backend.
 
 ---
 
@@ -21,7 +21,7 @@ The inference backend sits behind a strict **strangler-fig boundary** (`internal
 | TUI | [Bubble Tea](https://github.com/charmbracelet/bubbletea) (Elm architecture) |
 | Styling / layout | [Lipgloss](https://github.com/charmbracelet/lipgloss) + [stickers](https://github.com/76creates/stickers) |
 | TUI components | [Bubbles](https://github.com/charmbracelet/bubbles) |
-| Inference boundary | `apiclient.Client` interface — Anthropic API today, Korai SDK next |
+| Inference boundary | `apiclient.Client` interface — Korai P2P SDK + local/LAN workers |
 | MCP | [go-sdk](https://github.com/modelcontextprotocol/go-sdk) (official) |
 | Tool schemas | Go structs → [invopop/jsonschema](https://github.com/invopop/jsonschema) |
 | Concurrency | `golang.org/x/sync/errgroup` + channels |
@@ -55,7 +55,7 @@ cmd/korai  →  tui  →  engine  →  { tool, perm, apiclient, mcp, context, co
 ```
 
 - **`engine`** — the agent loop. Assembles context → streams inference → executes tools (permission-gated) → feeds results back → repeats until no tool calls remain. Headless-first: emits events on a `<-chan engine.Event`. No UI code here.
-- **`apiclient`** — the inference boundary (strangler fig). Defines its own `Request`/`Message`/`ContentBlock`/`Event`/`Usage` types; no vendor SDK type crosses it. `AnthropicClient` implements it today, `KoraiClient` later.
+- **`apiclient`** — the inference boundary (strangler fig). Defines its own `Request`/`Message`/`ContentBlock`/`Event`/`Usage` types; no vendor SDK type crosses it. `KoraiClient` (P2P network) and the local/LAN worker clients implement it.
 - **`tool` / `tools/*`** — the `Tool` interface + registry, then one package per tool. Each declares name, description, JSON schema, validation, `Execute`, and `ReadOnly`/`ConcurrencySafe`/`CheckPermission` (fail-closed by default).
 - **`perm`** — allow / ask / deny resolution and the shared mode selector.
 - **`command` / `skill`** — slash-command contract, built-ins, and markdown skills compiled into commands.
@@ -100,7 +100,7 @@ korai --model <model-id> --print "explain this codebase"
 
 Configuration lives under `.korai/` (project) and `~/.korai/` (user): `settings.json`, `skills/*.md`, `MEMORY.md`, and saved `sessions/`.
 
-**Backend:** set `KORAI_API_KEY` to use the Korai P2P inference network (optionally `KORAI_BASE_URL`); the model defaults to the `auto` routing alias. If only `ANTHROPIC_API_KEY` is set, the CLI falls back to the Anthropic backend. Either key can live in a `.env` file (gitignored) — see `.env.example`.
+**Backend:** set `KORAI_API_KEY` to use the Korai P2P inference network (optionally `KORAI_BASE_URL`); the model defaults to the `auto` routing alias. Or run against a local/LAN worker with `--local` (no key required). The key can live in a `.env` file (gitignored) — see `.env.example`.
 
 ---
 

@@ -79,59 +79,23 @@ type assembled struct {
 	snaplog   *snapshot.Log
 }
 
-// backend identifies which inference backend a session talks to. The choice is
-// made from the environment (see selectBackend) and determines the client, the
-// default model, and the model list the /model command offers.
-type backend int
-
-const (
-	// backendKorai routes inference through the Korai P2P network (KoraiClient).
-	backendKorai backend = iota
-	// backendAnthropic routes inference through the Anthropic API (AnthropicClient).
-	backendAnthropic
-)
-
-// koraiModels is the set the /model command offers on the Korai backend: the
-// orchestrator's routing aliases. ListModels could fetch the live set, but that
-// needs a network round-trip at startup; the aliases are always valid.
+// koraiModels is the set the /model command offers: the orchestrator's routing
+// aliases. ListModels could fetch the live set, but that needs a network
+// round-trip at startup; the aliases are always valid.
 var koraiModels = []string{"auto", "fast", "balanced", "deep"}
 
-// anthropicModels is the set the /model command offers on the Anthropic backend.
-var anthropicModels = []string{
-	"claude-opus-4-8",
-	"claude-sonnet-4-6",
-	"claude-haiku-4-5",
-}
+// koraiDefaultModel is the model used when neither a flag nor config selects one.
+const koraiDefaultModel = "auto"
 
-// selectBackend picks the inference backend from the environment: Korai when
-// KORAI_API_KEY is set, otherwise Anthropic when ANTHROPIC_API_KEY is set. This
-// lets the two backends coexist during the migration — set KORAI_API_KEY to opt
-// in. Returns an error when neither key is present.
-func selectBackend() (backend, error) {
-	switch {
-	case os.Getenv("KORAI_API_KEY") != "":
-		return backendKorai, nil
-	case os.Getenv("ANTHROPIC_API_KEY") != "":
-		return backendAnthropic, nil
-	default:
-		return 0, fmt.Errorf("no API key set: export KORAI_API_KEY (or ANTHROPIC_API_KEY), put it in a .env file, or run against a local worker (--local)")
+// remoteConfigured reports whether the networked Korai backend can be reached:
+// it needs KORAI_API_KEY. A keyless session still assembles (a local worker, or
+// auth deferred to the first remote turn), so callers treat the error as
+// non-fatal rather than aborting startup.
+func remoteConfigured() error {
+	if os.Getenv("KORAI_API_KEY") == "" {
+		return fmt.Errorf("no API key set: export KORAI_API_KEY, put it in a .env file, or run against a local worker (--local)")
 	}
-}
-
-// defaultModel returns the model used when neither a flag nor config selects one.
-func (b backend) defaultModel() string {
-	if b == backendKorai {
-		return "auto"
-	}
-	return "claude-sonnet-4-6"
-}
-
-// models returns the model list the /model command offers for this backend.
-func (b backend) models() []string {
-	if b == backendKorai {
-		return koraiModels
-	}
-	return anthropicModels
+	return nil
 }
 
 // defaultKoraiBaseURL is the orchestrator the CLI targets when KORAI_BASE_URL is
@@ -139,17 +103,14 @@ func (b backend) models() []string {
 // cloud default; set KORAI_BASE_URL to override.
 const defaultKoraiBaseURL = "https://korai-eu.fly.dev"
 
-// newClient constructs the apiclient.Client for this backend, reading the key
-// (and, for Korai, the optional base URL) from the environment.
-func (b backend) newClient(model string) apiclient.Client {
-	if b == backendKorai {
-		baseURL := os.Getenv("KORAI_BASE_URL")
-		if baseURL == "" {
-			baseURL = defaultKoraiBaseURL
-		}
-		return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), baseURL, model)
+// newKoraiClient constructs the networked Korai backend client, reading the key
+// and the optional base URL from the environment.
+func newKoraiClient(model string) apiclient.Client {
+	baseURL := os.Getenv("KORAI_BASE_URL")
+	if baseURL == "" {
+		baseURL = defaultKoraiBaseURL
 	}
-	return apiclient.NewAnthropicClient(os.Getenv("ANTHROPIC_API_KEY"), model)
+	return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), baseURL, model)
 }
 
 // close releases session resources (e.g. MCP server connections).
@@ -201,13 +162,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	// it even when the session starts on a local worker. A missing key is no
 	// longer fatal here: a keyless session still assembles, and the auth check is
 	// deferred to the first remote turn (see authGate below).
-	remoteBackend, remoteErr := selectBackend()
+	remoteErr := remoteConfigured()
 
-	// bk drives the default model and the /model list: the family of the backend
-	// the session starts on (a local worker is always Korai-family).
-	bk := remoteBackend
 	if useLocal {
-		bk = backendKorai
 		if endpoint.IsDirect() {
 			slog.Info("using local worker", "network", endpoint.Network, "address", endpoint.Address)
 		} else {
@@ -231,7 +188,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		model = settings.Model
 	}
 	if model == "" {
-		model = bk.defaultModel()
+		model = koraiDefaultModel
 	}
 	mode := opts.permMode
 	if !opts.permModeSet {
@@ -248,7 +205,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	deps := tool.Deps{WorkDir: wd, LSP: lspMgr}
 	// Build whichever backends are available and expose both through a
 	// ClientSelector so /worker_mode can switch between them at runtime. The local
-	// worker needs no API key; the networked backend reads its key via newClient.
+	// worker needs no API key; the networked backend reads its key via newKoraiClient.
 	var localClient apiclient.Client
 	if useLocal {
 		switch {
@@ -265,7 +222,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 	var remoteClient apiclient.Client
 	if remoteErr == nil {
-		remoteClient = remoteBackend.newClient(model)
+		remoteClient = newKoraiClient(model)
 	}
 	activeMode := apiclient.WorkerRemote
 	if useLocal {
@@ -368,7 +325,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	return &assembled{
 		client:    client,
 		registry:  registry,
-		commands:  buildCommands(home, wd, registry, bk.models(), models, modes, costTracker, sessStore, snapLog, clientSelector),
+		commands:  buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog, clientSelector),
 		models:    models,
 		modes:     modes,
 		cost:      costTracker,

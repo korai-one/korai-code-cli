@@ -7,10 +7,11 @@ Guidance for Claude Code (and any agent) working in this repository.
 **Korai Code CLI** (`korai`) — a terminal-based AI coding agent written in **Go**,
 built to run on the **Korai SDK**: a decentralized, peer-to-peer encrypted
 inference network. It is an **original implementation** following the architecture
-of an LLM-driven tool-calling loop wrapped in a terminal UI. The Korai SDK is now
-a live dependency (`korai-one/korai-sdk-go`) — `KoraiClient` talks to the P2P
-network today, alongside an Anthropic backend and a set of local/LAN worker
-backends (see the strangler-fig section).
+of an LLM-driven tool-calling loop wrapped in a terminal UI. The Korai SDK is the
+sole inference dependency (`korai-one/korai-sdk-go`) — `KoraiClient` talks to the
+P2P network, alongside a set of local/LAN worker backends (see the strangler-fig
+section). There is no third-party (e.g. Anthropic) backend: Korai runs on the
+Korai SDK, nothing else.
 
 Two documents are authoritative and you must follow them:
 
@@ -47,24 +48,20 @@ make build   # produces ./bin/korai
 
 The inference backend is swappable. **All** model access goes through
 `internal/apiclient`, behind the `apiclient.Client` interface
-(`Complete(ctx, Request) <-chan Event`). Three locked rules (`AGENTS.md` §4 items
-8–10) keep the backends decoupled:
+(`Complete(ctx, Request) <-chan Event`). Two locked rules keep the backends
+decoupled:
 
-1. Every direct `anthropic-sdk-go` call site inside `internal/apiclient` carries a
-   `// TODO KORAI SDK` comment — the historical swap points (still present in
-   `anthropic.go`). The Korai swap itself is **done**: `korai.go` consumes
-   `korai-sdk-go` directly.
-2. No backend SDK type crosses the `apiclient` boundary. `apiclient` defines its
+1. No backend SDK type crosses the `apiclient` boundary. `apiclient` defines its
    own types (`Request`, `Message`, `ContentBlock`, `TextBlock`, `ToolCallBlock`,
    `ToolResultBlock`, `ImageBlock`, `Event`, `Usage`, …) and converts at the edge.
-   This is the anti-corruption layer.
-3. `apiclient.Client` is an interface with several implementations, chosen at
+   This is the anti-corruption layer. `korai.go` consumes `korai-sdk-go` directly
+   and converts everything to these types at the edge.
+2. `apiclient.Client` is an interface with several implementations, chosen at
    session assembly from the environment. Nothing above `apiclient` knows which
    backend is live.
 
 Backends that implement `apiclient.Client` today:
 
-- **`AnthropicClient`** — the Anthropic API (`ANTHROPIC_API_KEY`).
 - **`KoraiClient`** — the Korai P2P network via `korai-sdk-go` (`KORAI_API_KEY`,
   optional `KORAI_BASE_URL`; default orchestrator `https://korai-eu.fly.dev`).
   Also used to reach a co-located worker that exposes only the loopback
@@ -95,7 +92,7 @@ internal/
                       #   Options: WithHooks, WithModelSelector, WithUsageRecorder,
                       #   WithSystemSuffix, WithAutoCompact. Enqueue() for mid-turn steering.
   apiclient/          # THE inference boundary (strangler fig). Own types; Client
-                      #   interface; AnthropicClient, KoraiClient, LocalWorkerClient;
+                      #   interface; KoraiClient, LocalWorkerClient;
                       #   ModelSelector; Usage; fenced-tool-call parsing (fence.go).
   tool/               # frozen Tool interface + Registry + Schema[T] helper + Deps (WorkDir, LSP).
   tools/              # one package per tool (see below). tools.go = RegisterAll.
@@ -261,7 +258,7 @@ markdown file (optional `---\ndescription: …\n---` front matter) in
   TUI mode logs go to a file/discard so stderr can't corrupt the alt-screen).
 - Doc comment on every exported symbol, starting with its name.
 - Approved dependencies only (`AGENTS.md` end). Ask before adding any. Current
-  notable deps: `korai-one/korai-sdk-go`, `anthropic-sdk-go`, `charm.land/bubbletea`,
+  notable deps: `korai-one/korai-sdk-go`, `charm.land/bubbletea`,
   `coder/websocket`, `smacker/go-tree-sitter`, `charmbracelet/x/powernap` (LSP),
   `modernc.org/sqlite`.
 

@@ -1,6 +1,6 @@
 // Package apiclient is the sole point of contact with the inference backend.
-// anthropic-sdk-go types must never cross this package boundary; all callers
-// use the types defined here.
+// Backend SDK types (e.g. korai-sdk-go) must never cross this package boundary;
+// all callers use the types defined here.
 package apiclient
 
 import "encoding/json"

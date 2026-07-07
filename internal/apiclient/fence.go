@@ -16,8 +16,8 @@ import (
 // and the client parses those fences back out of the reply text. This file is
 // the anti-corruption layer that lets the structured engine (which speaks
 // apiclient's ToolDef / ToolCallBlock / ToolResultBlock) talk to a fence model
-// without either side knowing about the other. The Anthropic backend keeps
-// using real structured tool calls; only KoraiClient goes through here.
+// without either side knowing about the other. Only KoraiClient goes through
+// here — a backend with native structured tool calls would not need it.
 
 // fenceCall is one tool invocation parsed out of a model reply. Input is the
 // raw JSON body of the fence, passed verbatim to the tool (whose own schema

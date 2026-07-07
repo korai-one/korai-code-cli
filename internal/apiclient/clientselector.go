@@ -74,7 +74,7 @@ func (s *ClientSelector) SetMode(mode string) error {
 		s.active = WorkerLocal
 	case WorkerRemote:
 		if s.remote == nil {
-			return fmt.Errorf("no remote backend available (set KORAI_API_KEY or ANTHROPIC_API_KEY)")
+			return fmt.Errorf("no remote backend available (set KORAI_API_KEY)")
 		}
 		s.active = WorkerRemote
 	default:
