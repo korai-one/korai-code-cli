@@ -1,6 +1,7 @@
 package synchub_test
 
 import (
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,9 +9,22 @@ import (
 	"time"
 
 	"github.com/Nevaero/korai-code-cli/internal/synchub"
+	"github.com/Nevaero/korai-code-cli/internal/synckey"
 )
 
 const hexKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+// derivedSyncID is the sync_id the hexKey resolves to. The bearer is derived
+// from the content key (not configured), so Resolve must reproduce this
+// regardless of any KORAI_SYNC_ID / settings value.
+func derivedSyncID(t *testing.T) string {
+	t.Helper()
+	k, err := hex.DecodeString(hexKey)
+	if err != nil {
+		t.Fatalf("decoding hexKey: %v", err)
+	}
+	return synckey.DeriveSyncID(k)
+}
 
 // TestResolveDisabledByDefault verifies sync is off with no config and no env.
 func TestResolveDisabledByDefault(t *testing.T) {
@@ -30,7 +44,7 @@ func TestResolveDisabledByDefault(t *testing.T) {
 func TestResolveFromEnv(t *testing.T) {
 	t.Setenv("KORAI_SYNC_ENABLED", "true")
 	t.Setenv("KORAI_SYNC_URL", "https://hub.example/")
-	t.Setenv("KORAI_SYNC_ID", "abc123")
+	t.Setenv("KORAI_SYNC_ID", "abc123") // ignored: sync_id is derived from the key
 	t.Setenv("KORAI_SYNC_KEY", hexKey)
 	t.Setenv("KORAI_SYNC_INTERVAL", "")
 
@@ -45,8 +59,8 @@ func TestResolveFromEnv(t *testing.T) {
 	if cfg.URL != "https://hub.example" { // trailing slash trimmed
 		t.Errorf("URL = %q", cfg.URL)
 	}
-	if cfg.SyncID != "abc123" {
-		t.Errorf("SyncID = %q", cfg.SyncID)
+	if want := derivedSyncID(t); cfg.SyncID != want {
+		t.Errorf("SyncID = %q, want derived %q (configured value must be ignored)", cfg.SyncID, want)
 	}
 	if len(cfg.Key) != 32 {
 		t.Errorf("key len = %d", len(cfg.Key))
@@ -78,8 +92,8 @@ func TestResolveEnvOverridesSettings(t *testing.T) {
 	if cfg.URL != "https://env-host" {
 		t.Errorf("env URL should win, got %q", cfg.URL)
 	}
-	if cfg.SyncID != "sid" {
-		t.Errorf("settings SyncID should fill in, got %q", cfg.SyncID)
+	if want := derivedSyncID(t); cfg.SyncID != want {
+		t.Errorf("SyncID should be derived from the key (%q), got %q", want, cfg.SyncID)
 	}
 	if cfg.Interval != 45*time.Second {
 		t.Errorf("env interval should win, got %v", cfg.Interval)

@@ -129,6 +129,16 @@ func (c *Client) GetBlock(ctx context.Context, hash string) ([]byte, error) {
 	return data, nil
 }
 
+// WipeRemote deletes the entire namespace on the hub (DELETE /v1/sync): all
+// ciphertext blocks and tombstones for this sync_id. It is idempotent — a
+// second call, or a call against an already-empty namespace, still succeeds. It
+// backs the duress wipe's remote-purge step; callers treat a network failure as
+// non-fatal because the local crypto-shred already makes the ciphertext
+// unreadable.
+func (c *Client) WipeRemote(ctx context.Context) error {
+	return c.do(ctx, http.MethodDelete, c.base, nil, nil)
+}
+
 // Tombstone records a delete for itemID and returns its sequence.
 func (c *Client) Tombstone(ctx context.Context, itemID string) (int64, error) {
 	body, err := json.Marshal(tombstoneRequest{ItemID: itemID})

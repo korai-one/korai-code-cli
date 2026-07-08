@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Nevaero/korai-code-cli/internal/session"
+	"github.com/Nevaero/korai-code-cli/internal/synckey"
 )
 
 // defaultInterval is the background poll cadence when none is configured.
@@ -42,13 +42,17 @@ type Config struct {
 
 // FileSettings mirrors the optional "sync" block in ~/.korai/settings.json. The
 // content key is deliberately NOT read from settings — it comes only from the
-// KORAI_SYNC_KEY env var or the ~/.korai/sync.key file (see
-// session.LoadContentKey) so a shared/committed settings file never carries key
-// material.
+// KORAI_SYNC_KEY env var or the ~/.korai/sync.key file (see synckey.Load) so a
+// shared/committed settings file never carries key material.
+//
+// SyncID is retained for backward compatibility but is ignored: the namespace
+// bearer is now derived from the content key (synckey.DeriveSyncID) so any
+// device holding the same key targets the same namespace with no manual
+// configuration. Likewise KORAI_SYNC_ID is no longer consulted.
 type FileSettings struct {
 	Enabled  bool   `json:"enabled,omitempty"`
 	URL      string `json:"url,omitempty"`
-	SyncID   string `json:"syncId,omitempty"`
+	SyncID   string `json:"syncId,omitempty"`   // deprecated: ignored (sync_id is derived from the key)
 	Interval string `json:"interval,omitempty"` // Go duration, e.g. "30s"
 }
 
@@ -75,7 +79,6 @@ func Resolve(home string, fs FileSettings) (Config, error) {
 	}
 
 	url := firstNonEmpty(strings.TrimSpace(os.Getenv("KORAI_SYNC_URL")), fs.URL)
-	syncID := firstNonEmpty(strings.TrimSpace(os.Getenv("KORAI_SYNC_ID")), fs.SyncID)
 
 	interval := defaultInterval
 	if raw := firstNonEmpty(strings.TrimSpace(os.Getenv("KORAI_SYNC_INTERVAL")), fs.Interval); raw != "" {
@@ -89,20 +92,21 @@ func Resolve(home string, fs FileSettings) (Config, error) {
 		interval = minInterval
 	}
 
-	key, ok, err := session.LoadContentKey(home)
+	key, ok, err := synckey.Load(home)
 	if err != nil {
 		return Config{}, fmt.Errorf("loading sync content key: %w", err)
 	}
 
-	if url == "" || syncID == "" || !ok {
-		return Config{}, fmt.Errorf("%w (url=%t sync_id=%t key=%t)",
-			ErrIncomplete, url != "", syncID != "", ok)
+	if url == "" || !ok {
+		return Config{}, fmt.Errorf("%w (url=%t key=%t)", ErrIncomplete, url != "", ok)
 	}
 
+	// The namespace bearer is derived from the key, not configured: every device
+	// with the same K_folder resolves the same sync_id.
 	return Config{
 		Enabled:    true,
 		URL:        strings.TrimRight(url, "/"),
-		SyncID:     syncID,
+		SyncID:     synckey.DeriveSyncID(key),
 		Key:        key,
 		Interval:   interval,
 		CursorPath: filepath.Join(home, ".korai", "sync-cursor"),

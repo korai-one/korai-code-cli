@@ -150,6 +150,8 @@ func rootCmd() *cobra.Command {
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
 
 	root.AddCommand(serveCmd())
+	root.AddCommand(syncCmd())
+	root.AddCommand(nukeCmd())
 
 	return root
 }

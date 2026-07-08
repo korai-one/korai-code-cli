@@ -39,11 +39,11 @@ var ErrKeyLength = errors.New("session content key must be 32 bytes")
 // module; the versioned Name lets an XChaCha codec drop in later without
 // breaking existing files.
 //
-// Key source (PLACEHOLDER): the caller supplies the raw 32-byte key. Today it is
-// loaded from KORAI_SYNC_KEY or ~/.korai/sync.key via LoadContentKey. This is a
-// stand-in for the real cross-device key distribution described in step 3 of the
-// history-sync design (out-of-band QR / short-code transfer); the Codec itself
-// is agnostic to how the key was obtained.
+// Key source: the caller supplies the raw 32-byte key, loaded from
+// KORAI_SYNC_KEY or ~/.korai/sync.key via LoadContentKey. The key is generated
+// and distributed across devices by internal/synckey (BIP39 mnemonic, terminal
+// QR, passphrase-wrapped recovery); the Codec itself is agnostic to how the key
+// was obtained.
 type EncryptingCodec struct {
 	aead cipher.AEAD
 }
@@ -114,10 +114,10 @@ func (c *EncryptingCodec) Decode(stored []byte) ([]byte, error) {
 // off" rather than as a failure), and a non-nil error only when a key is present
 // but malformed or the wrong length.
 //
-// PLACEHOLDER: this is a local, single-device key source pending the real
-// cross-device key distribution flow (step 3 of the history-sync design). The
-// key file is expected to be 0600; a warning-worthy looser mode is not enforced
-// here.
+// This is the low-level reader of the key file that internal/synckey writes and
+// owns (generation, sync_id derivation, and the cross-device transports build on
+// top of it). The key file is expected to be 0600; a warning-worthy looser mode
+// is not enforced here.
 func LoadContentKey(home string) (key []byte, ok bool, err error) {
 	if raw := strings.TrimSpace(os.Getenv("KORAI_SYNC_KEY")); raw != "" {
 		k, derr := decodeKey(raw)
