@@ -28,6 +28,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/skill"
 	"github.com/Nevaero/korai-code-cli/internal/snapshot"
+	"github.com/Nevaero/korai-code-cli/internal/synchub"
 	todostore "github.com/Nevaero/korai-code-cli/internal/todo"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 	"github.com/Nevaero/korai-code-cli/internal/tools"
@@ -281,15 +282,50 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	snapMgr := snapshot.New(ctx, wd, snapshotsDir(home))
 	snapLog := &snapshot.Log{}
 
+	// Cross-device history sync (opt-in; OFF by default). When enabled it
+	// encrypts sessions at rest with the sync content key and starts a
+	// background client that replicates them through the blind hub. When
+	// disabled (the default) syncCodec is nil and no goroutine or network call
+	// happens — zero behavior change.
+	syncCfg, syncErr := synchub.Resolve(home, syncFileSettings(settings.Sync))
+	if syncErr != nil {
+		slog.Warn("sync configuration ignored", "error", syncErr)
+	}
+	var syncCodec session.Codec
+	if syncCfg.Enabled {
+		if c, cerr := session.NewEncryptingCodec(syncCfg.Key); cerr == nil {
+			syncCodec = c
+		} else {
+			slog.Warn("sync encryption disabled", "error", cerr)
+			syncCfg.Enabled = false
+		}
+	}
+
 	// Session persistence: resolve the session to use (resume / continue / new).
 	// Sessions persist to SQLite; if the database cannot be opened, fall back to
 	// the JSONL file store so a storage error never blocks a session.
 	var sessStore session.Store
 	if sq, serr := session.NewSQLiteStore(ctx, sessionsDBPath(home)); serr == nil {
+		if syncCodec != nil {
+			sq.WithCodec(syncCodec)
+		}
 		sessStore = sq
 	} else {
 		slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
-		sessStore = session.NewFileStore(sessionsDir(home))
+		fs := session.NewFileStore(sessionsDir(home))
+		if syncCodec != nil {
+			fs.WithCodec(syncCodec)
+		}
+		sessStore = fs
+	}
+
+	if syncCfg.Enabled {
+		if syncer, serr := synchub.New(syncCfg, sessStore, slog.Default()); serr != nil {
+			slog.Warn("sync client disabled", "error", serr)
+		} else if syncer != nil {
+			go syncer.Run(ctx)
+			slog.Info("cross-device history sync enabled", "interval", syncCfg.Interval)
+		}
 	}
 	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
 	saver := func(id string, created time.Time, msgs []apiclient.Message) {
@@ -335,6 +371,21 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		snapshots: snapMgr,
 		snaplog:   snapLog,
 	}, nil
+}
+
+// syncFileSettings maps the optional config "sync" block onto the synchub
+// settings form. A nil block yields the zero value (disabled unless env
+// enables it).
+func syncFileSettings(s *config.SyncSettings) synchub.FileSettings {
+	if s == nil {
+		return synchub.FileSettings{}
+	}
+	return synchub.FileSettings{
+		Enabled:  s.Enabled,
+		URL:      s.URL,
+		SyncID:   s.SyncID,
+		Interval: s.Interval,
+	}
 }
 
 // sessionsDir returns the directory where JSONL sessions are stored (the

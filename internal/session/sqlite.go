@@ -206,6 +206,18 @@ func (s *SQLiteStore) List() ([]Record, error) {
 	return records, nil
 }
 
+// Delete removes the session row with the given id. A missing row is not an
+// error (delete is idempotent), so a sync tombstone applies cleanly even when
+// the session is absent locally. It is not part of the Store interface; callers
+// that need it (the sync client applying tombstones) type-assert for it.
+func (s *SQLiteStore) Delete(id string) error {
+	const q = `DELETE FROM sessions WHERE id = ?`
+	if _, err := s.db.ExecContext(context.Background(), q, id); err != nil {
+		return fmt.Errorf("deleting session %s: %w", id, err)
+	}
+	return nil
+}
+
 // Latest returns the most recently updated session for cwd, if any.
 func (s *SQLiteStore) Latest(cwd string) (Record, bool, error) {
 	const q = `SELECT id, created, updated, cwd, model, enc, messages FROM sessions WHERE cwd = ? ORDER BY updated DESC LIMIT 1`

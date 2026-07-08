@@ -359,6 +359,18 @@ func (s *FileStore) List() ([]Record, error) {
 	return records, nil
 }
 
+// Delete removes the session file with the given id. A missing file is not an
+// error (delete is idempotent), which lets a sync tombstone apply cleanly even
+// if the session was never present locally. It is not part of the Store
+// interface; callers that need it (the sync client applying tombstones) type-
+// assert for it.
+func (s *FileStore) Delete(id string) error {
+	if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting session %s: %w", id, err)
+	}
+	return nil
+}
+
 // Latest returns the most recently modified session for cwd, if any.
 func (s *FileStore) Latest(cwd string) (Record, bool, error) {
 	records, err := s.List()

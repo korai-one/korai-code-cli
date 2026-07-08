@@ -26,6 +26,21 @@ type Settings struct {
 	// (lint, tests, build). Each runs in the working directory; a non-zero exit
 	// is reported as a failed check. Empty means no checks are configured.
 	Checks []string `json:"checks,omitempty"`
+	// Sync is the optional cross-device history-sync block. Absent (nil) means
+	// sync is off, which is the default; env vars (KORAI_SYNC_*) can still
+	// enable it. The content key is never read from here — only from
+	// KORAI_SYNC_KEY or ~/.korai/sync.key. See internal/synchub.
+	Sync *SyncSettings `json:"sync,omitempty"`
+}
+
+// SyncSettings is the settings-file form of the opt-in history-sync
+// configuration. It intentionally omits the content key so a shared or
+// committed settings file never carries key material.
+type SyncSettings struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	URL      string `json:"url,omitempty"`
+	SyncID   string `json:"syncId,omitempty"`
+	Interval string `json:"interval,omitempty"` // Go duration, e.g. "30s"
 }
 
 // HookSpec is one shell command to run for a lifecycle event. Plain data; the
@@ -95,6 +110,10 @@ func Merge(base, override Settings) Settings {
 	merged.MCPServers = servers
 
 	merged.Hooks = mergeHooks(base.Hooks, override.Hooks)
+
+	if override.Sync != nil {
+		merged.Sync = override.Sync
+	}
 
 	return merged
 }
