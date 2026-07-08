@@ -89,8 +89,8 @@ github.com/invopop/jsonschema v0.14.0/go.mod h1:ygm6C2EaVNMBDPpaPlnOA2pFAxBnxGjF
 github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
 github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
 github.com/juju/gnuflag v0.0.0-20171113085948-2ce1bb71843d/go.mod h1:2PavIy+JPciBPrBUjwbNvtwB6RQlve+hkpll6QSNmOE=
-github.com/korai-one/korai-sdk-go v0.2.0 h1:ccN3dLaQDk5eCw9x5M974tdCBLWMuBMH93YmH7qpcG4=
-github.com/korai-one/korai-sdk-go v0.2.0/go.mod h1:zdtxhpbkMhKTtRF0/4kt5rtVh45ttU32NZAI7ddSKKo=
+github.com/korai-one/korai-sdk-go v0.3.1 h1:D8tAj13gZ8wuhYzAqPa4affS0QWrCqZQT9z7mSeHOAI=
+github.com/korai-one/korai-sdk-go v0.3.1/go.mod h1:hgpfYmj94EK8cD/KhtUa6R0tuneHOn3K7bkuuTPq0wQ=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/lucasb-eyer/go-colorful v1.4.0 h1:UtrWVfLdarDgc44HcS7pYloGHJUjHV/4FwW4TvVgFr4=

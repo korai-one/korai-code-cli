@@ -10,7 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/synchub"
+	"github.com/korai-one/korai-sdk-go/session/synchub"
+
 	"github.com/Nevaero/korai-code-cli/internal/synckey"
 )
 

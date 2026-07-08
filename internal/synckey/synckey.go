@@ -27,7 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Nevaero/korai-code-cli/internal/session"
+	sdksession "github.com/korai-one/korai-sdk-go/session"
 )
 
 // KeyLen is the length in bytes of K_folder (a 256-bit key).
@@ -61,9 +61,9 @@ func Generate() ([]byte, error) {
 }
 
 // Save persists key to KeyPath(home) as a hex line, 0600 in a 0700 dir. It is
-// the single writer of the file that session.LoadContentKey (and Load) read, so
-// the encrypting Codec and the sync client pick the key up with no further
-// wiring. key must be exactly KeyLen bytes.
+// the single writer of the file that the SDK's session.LoadContentKey (and Load)
+// read, so the encrypting Codec and the sync client pick the key up with no
+// further wiring. key must be exactly KeyLen bytes.
 func Save(home string, key []byte) error {
 	if len(key) != KeyLen {
 		return fmt.Errorf("%w: got %d", ErrKeyLength, len(key))
@@ -83,7 +83,7 @@ func Save(home string, key []byte) error {
 // (the KORAI_SYNC_KEY env var, then the key file), so a single reader backs the
 // whole feature. ok is false with a nil error when no key is configured.
 func Load(home string) (key []byte, ok bool, err error) {
-	return session.LoadContentKey(home)
+	return sdksession.LoadContentKey(home)
 }
 
 // Exists reports whether a content key is currently configured (env or file).

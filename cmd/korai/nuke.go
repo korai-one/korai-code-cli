@@ -9,8 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/korai-one/korai-sdk-go/session/synchub"
+
 	"github.com/Nevaero/korai-code-cli/internal/config"
-	"github.com/Nevaero/korai-code-cli/internal/synchub"
 	"github.com/Nevaero/korai-code-cli/internal/synckey"
 )
 

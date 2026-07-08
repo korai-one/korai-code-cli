@@ -11,6 +11,10 @@ import (
 
 	"github.com/joho/godotenv"
 
+	korai "github.com/korai-one/korai-sdk-go"
+	sdksession "github.com/korai-one/korai-sdk-go/session"
+	"github.com/korai-one/korai-sdk-go/session/synchub"
+
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/compact"
@@ -28,7 +32,6 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/skill"
 	"github.com/Nevaero/korai-code-cli/internal/snapshot"
-	"github.com/Nevaero/korai-code-cli/internal/synchub"
 	todostore "github.com/Nevaero/korai-code-cli/internal/todo"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
 	"github.com/Nevaero/korai-code-cli/internal/tools"
@@ -291,9 +294,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	if syncErr != nil {
 		slog.Warn("sync configuration ignored", "error", syncErr)
 	}
-	var syncCodec session.Codec
+	var syncCodec sdksession.Codec
 	if syncCfg.Enabled {
-		if c, cerr := session.NewEncryptingCodec(syncCfg.Key); cerr == nil {
+		if c, cerr := sdksession.NewEncryptingCodec(syncCfg.Key); cerr == nil {
 			syncCodec = c
 		} else {
 			slog.Warn("sync encryption disabled", "error", cerr)
@@ -302,17 +305,18 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 
 	// Session persistence: resolve the session to use (resume / continue / new).
-	// Sessions persist to SQLite; if the database cannot be opened, fall back to
+	// Sessions persist to SQLite in the shared SDK's canonical korai.Session
+	// format (teleport-compatible); if the database cannot be opened, fall back to
 	// the JSONL file store so a storage error never blocks a session.
-	var sessStore session.Store
-	if sq, serr := session.NewSQLiteStore(ctx, sessionsDBPath(home)); serr == nil {
+	var sessStore sdksession.Store
+	if sq, serr := sdksession.NewSQLiteStore(ctx, sessionsDBPath(home)); serr == nil {
 		if syncCodec != nil {
 			sq.WithCodec(syncCodec)
 		}
 		sessStore = sq
 	} else {
 		slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
-		fs := session.NewFileStore(sessionsDir(home))
+		fs := sdksession.NewFileStore(sessionsDir(home))
 		if syncCodec != nil {
 			fs.WithCodec(syncCodec)
 		}
@@ -329,19 +333,20 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
 	saver := func(id string, created time.Time, msgs []apiclient.Message) {
-		if err := sessStore.Save(session.Record{
+		if err := sessStore.Save(korai.Session{
 			ID: id, Created: created, Updated: time.Now(),
-			CWD: wd, Model: models.Get(), Messages: msgs,
+			CWD: wd, Model: models.Get(), Tool: session.Tool,
+			Messages: session.ToCanonicalMessages(msgs),
 		}); err != nil {
 			slog.Warn("saving session", "error", err)
 		}
 	}
 	resumeLoad := func(id string) ([]apiclient.Message, time.Time, error) {
-		rec, err := sessStore.Load(id)
+		sess, err := sessStore.Load(id)
 		if err != nil {
 			return nil, time.Time{}, err
 		}
-		return rec.Messages, rec.Created, nil
+		return session.FromCanonicalMessages(sess.Messages), sess.Created, nil
 	}
 
 	return &assembled{
@@ -408,40 +413,40 @@ func snapshotsDir(home string) string {
 // resolveSession picks the session to use: an explicit --resume id, the latest
 // session for the directory with --continue, or a fresh session otherwise. On
 // any resume failure it logs and falls back to a new session.
-func resolveSession(store session.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
+func resolveSession(store sdksession.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
 	switch {
 	case opts.resumeID != "":
-		rec, err := store.Load(opts.resumeID)
+		sess, err := store.Load(opts.resumeID)
 		if err == nil {
-			return rec.ID, rec.Created, rec.Messages
+			return sess.ID, sess.Created, session.FromCanonicalMessages(sess.Messages)
 		}
 		slog.Warn("could not resume session; starting fresh", "id", opts.resumeID, "error", err)
 	case opts.cont:
-		if rec, ok, err := store.Latest(wd); err == nil && ok {
-			return rec.ID, rec.Created, rec.Messages
+		if sess, ok, err := store.Latest(wd); err == nil && ok {
+			return sess.ID, sess.Created, session.FromCanonicalMessages(sess.Messages)
 		}
 	}
 	return session.NewID(), time.Now(), nil
 }
 
 // formatSessions renders the saved-session list for /resume.
-func formatSessions(store session.Store, wd string) string {
-	records, err := store.List()
+func formatSessions(store sdksession.Store, wd string) string {
+	sessions, err := store.List()
 	if err != nil {
 		return "could not list sessions: " + err.Error()
 	}
-	if len(records) == 0 {
+	if len(sessions) == 0 {
 		return "No saved sessions yet."
 	}
 	var b strings.Builder
 	b.WriteString("Saved sessions (newest first) — /resume <id> to load:")
 	shown := 0
-	for _, r := range records {
-		if r.CWD != wd {
+	for _, s := range sessions {
+		if s.CWD != wd {
 			continue
 		}
 		fmt.Fprintf(&b, "\n  %s  %s  (%d msgs)  %s",
-			r.ID, r.Updated.Local().Format("2006-01-02 15:04"), len(r.Messages), firstUserText(r.Messages))
+			s.ID, s.Updated.Local().Format("2006-01-02 15:04"), len(s.Messages), firstUserText(s.Messages))
 		shown++
 	}
 	if shown == 0 {
@@ -450,14 +455,15 @@ func formatSessions(store session.Store, wd string) string {
 	return b.String()
 }
 
-// firstUserText returns a short snippet of the first user message.
-func firstUserText(msgs []apiclient.Message) string {
+// firstUserText returns a short snippet of the first user message in a stored
+// canonical session.
+func firstUserText(msgs []korai.SessionMessage) string {
 	for _, m := range msgs {
-		if m.Role != apiclient.RoleUser {
+		if m.Role != string(apiclient.RoleUser) {
 			continue
 		}
-		for _, blk := range m.Content {
-			if tb, ok := blk.(apiclient.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
+		for _, blk := range m.Blocks {
+			if tb, ok := blk.(korai.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
 				s := strings.TrimSpace(tb.Text)
 				if len(s) > 50 {
 					s = s[:50] + "…"
@@ -480,7 +486,7 @@ func aboutText() string {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore session.Store, snapLog *snapshot.Log) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore sdksession.Store, snapLog *snapshot.Log) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
