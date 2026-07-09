@@ -21,6 +21,10 @@ type engineEventMsg struct {
 // turnDoneMsg signals the engine's event channel closed (turn finished).
 type turnDoneMsg struct{}
 
+// activeSyncTickMsg fires on the active-sync cadence so the open conversation is
+// re-saved and the background sync cycle can push it mid-session.
+type activeSyncTickMsg struct{}
+
 // permRequestMsg surfaces a pending permission request to the model.
 type permRequestMsg struct {
 	pr permRequest

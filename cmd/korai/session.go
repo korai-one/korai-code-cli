@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,11 @@ type assembled struct {
 	initialHistory []apiclient.Message
 	saver          func(id string, created time.Time, msgs []apiclient.Message)
 	resumeLoad     func(id string) ([]apiclient.Message, time.Time, error)
+
+	// activeSyncInterval is the cadence at which the long-running loops (TUI,
+	// serve) re-persist the open conversation so the background syncer pushes it
+	// mid-session. Zero disables the periodic checkpoint (sync is off).
+	activeSyncInterval time.Duration
 
 	snapshots *snapshot.Manager
 	snaplog   *snapshot.Log
@@ -288,41 +294,11 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	// Cross-device history sync (opt-in; OFF by default). When enabled it
 	// encrypts sessions at rest with the sync content key and starts a
 	// background client that replicates them through the blind hub. When
-	// disabled (the default) syncCodec is nil and no goroutine or network call
-	// happens — zero behavior change.
-	syncCfg, syncErr := synchub.Resolve(home, syncFileSettings(settings.Sync))
-	if syncErr != nil {
-		slog.Warn("sync configuration ignored", "error", syncErr)
-	}
-	var syncCodec sdksession.Codec
-	if syncCfg.Enabled {
-		if c, cerr := sdksession.NewEncryptingCodec(syncCfg.Key); cerr == nil {
-			syncCodec = c
-		} else {
-			slog.Warn("sync encryption disabled", "error", cerr)
-			syncCfg.Enabled = false
-		}
-	}
+	// disabled (the default) the store uses no codec and no goroutine or network
+	// call happens — zero behavior change.
+	sessStore, syncCfg := openSyncedStore(ctx, home, syncFileSettings(settings.Sync))
 
-	// Session persistence: resolve the session to use (resume / continue / new).
-	// Sessions persist to SQLite in the shared SDK's canonical korai.Session
-	// format (teleport-compatible); if the database cannot be opened, fall back to
-	// the JSONL file store so a storage error never blocks a session.
-	var sessStore sdksession.Store
-	if sq, serr := sdksession.NewSQLiteStore(ctx, sessionsDBPath(home)); serr == nil {
-		if syncCodec != nil {
-			sq.WithCodec(syncCodec)
-		}
-		sessStore = sq
-	} else {
-		slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
-		fs := sdksession.NewFileStore(sessionsDir(home))
-		if syncCodec != nil {
-			fs.WithCodec(syncCodec)
-		}
-		sessStore = fs
-	}
-
+	var activeSyncInterval time.Duration
 	if syncCfg.Enabled {
 		if syncer, serr := synchub.New(syncCfg, sessStore, slog.Default()); serr != nil {
 			slog.Warn("sync client disabled", "error", serr)
@@ -330,6 +306,10 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 			go syncer.Run(ctx)
 			slog.Info("cross-device history sync enabled", "interval", syncCfg.Interval)
 		}
+		// The long-running loops re-persist the open conversation on this cadence
+		// so the syncer sweeps it up before the turn that ends it. Only meaningful
+		// when sync is on, so it stays zero (disabled) otherwise.
+		activeSyncInterval = resolveActiveSyncInterval(settings.Sync)
 	}
 	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
 	saver := func(id string, created time.Time, msgs []apiclient.Message) {
@@ -373,6 +353,8 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		saver:          saver,
 		resumeLoad:     resumeLoad,
 
+		activeSyncInterval: activeSyncInterval,
+
 		snapshots: snapMgr,
 		snaplog:   snapLog,
 	}, nil
@@ -391,6 +373,93 @@ func syncFileSettings(s *config.SyncSettings) synchub.FileSettings {
 		SyncID:   s.SyncID,
 		Interval: s.Interval,
 	}
+}
+
+// openSyncedStore resolves the cross-device sync configuration and opens the
+// canonical session store with the matching at-rest codec, so that
+// encrypted-on-disk sessions synced in from other surfaces (kode web, the
+// dashboard) decode on read. It returns the store plus the resolved sync config
+// (Enabled=false when sync is off) so the caller can also start the background
+// syncer. It never fails: a SQLite open error falls back to the JSONL file
+// store, and a bad sync config is logged and treated as disabled. Both assemble
+// and the teleport lister open the store through here so they see the same data.
+func openSyncedStore(ctx context.Context, home string, fs synchub.FileSettings) (sdksession.Store, synchub.Config) {
+	syncCfg, syncErr := synchub.Resolve(home, fs)
+	if syncErr != nil {
+		slog.Warn("sync configuration ignored", "error", syncErr)
+	}
+	var syncCodec sdksession.Codec
+	if syncCfg.Enabled {
+		if c, cerr := sdksession.NewEncryptingCodec(syncCfg.Key); cerr == nil {
+			syncCodec = c
+		} else {
+			slog.Warn("sync encryption disabled", "error", cerr)
+			syncCfg.Enabled = false
+		}
+	}
+
+	// Sessions persist to SQLite in the shared SDK's canonical korai.Session
+	// format (teleport-compatible); if the database cannot be opened, fall back
+	// to the JSONL file store so a storage error never blocks a session.
+	sq, serr := sdksession.NewSQLiteStore(ctx, sessionsDBPath(home))
+	if serr == nil {
+		if syncCodec != nil {
+			sq.WithCodec(syncCodec)
+		}
+		return sq, syncCfg
+	}
+	slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
+	fs2 := sdksession.NewFileStore(sessionsDir(home))
+	if syncCodec != nil {
+		fs2.WithCodec(syncCodec)
+	}
+	return fs2, syncCfg
+}
+
+// defaultActiveSyncInterval is the cadence at which the open conversation is
+// checkpointed (re-saved so the sync cycle sweeps it up) when neither config nor
+// env overrides it.
+const defaultActiveSyncInterval = 3 * time.Minute
+
+// minActiveSyncInterval clamps overly aggressive checkpointing so a misconfigured
+// value cannot hammer the store or the hub.
+const minActiveSyncInterval = 15 * time.Second
+
+// resolveActiveSyncInterval picks the active-session checkpoint cadence:
+// KORAI_SYNC_ACTIVE_INTERVAL wins, then the config sync.activeSyncInterval field,
+// else the default. Values parse as a Go duration ("3m") or a bare integer of
+// seconds; an unparseable value falls back to the default rather than failing
+// the session.
+func resolveActiveSyncInterval(s *config.SyncSettings) time.Duration {
+	raw := strings.TrimSpace(os.Getenv("KORAI_SYNC_ACTIVE_INTERVAL"))
+	if raw == "" && s != nil {
+		raw = strings.TrimSpace(s.ActiveSyncInterval)
+	}
+	if raw == "" {
+		return defaultActiveSyncInterval
+	}
+	d, err := parseDurationOrSeconds(raw)
+	if err != nil {
+		slog.Warn("invalid active-sync interval; using default", "value", raw, "error", err)
+		return defaultActiveSyncInterval
+	}
+	if d < minActiveSyncInterval {
+		d = minActiveSyncInterval
+	}
+	return d
+}
+
+// parseDurationOrSeconds accepts a Go duration ("3m") or a bare integer count of
+// seconds ("180"), mirroring the hub poll-interval parser.
+func parseDurationOrSeconds(s string) (time.Duration, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return d, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("want a duration like 3m or an integer of seconds")
+	}
+	return time.Duration(n) * time.Second, nil
 }
 
 // sessionsDir returns the directory where JSONL sessions are stored (the

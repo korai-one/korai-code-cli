@@ -41,6 +41,12 @@ type SyncSettings struct {
 	URL      string `json:"url,omitempty"`
 	SyncID   string `json:"syncId,omitempty"`
 	Interval string `json:"interval,omitempty"` // Go duration, e.g. "30s"
+	// ActiveSyncInterval is how often the currently-open conversation is
+	// re-saved so the background sync cycle sweeps it up mid-session (a peer can
+	// pick it up before the turn that ends it, not only afterwards). A Go
+	// duration ("3m") or a bare integer of seconds; empty means the built-in
+	// default. The KORAI_SYNC_ACTIVE_INTERVAL env var overrides it.
+	ActiveSyncInterval string `json:"activeSyncInterval,omitempty"`
 }
 
 // HookSpec is one shell command to run for a lifecycle event. Plain data; the
