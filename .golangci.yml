@@ -14,6 +14,14 @@ linters:
     - errorlint
 
   settings:
+    errcheck:
+      # A CLI writes to stdout/stderr via fmt.Fprint*; a failed terminal write is
+      # not actionable, and the codebase never checks these returns. Exclude the
+      # family rather than blank-assign ~40 call sites across the tree.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     revive:
       rules:
         - name: exported

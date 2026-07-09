@@ -5,9 +5,8 @@ import "context"
 // Client is the inference boundary. engine calls this; nothing below it
 // knows which network backend is in use.
 //
-// AnthropicClient implements Client today (all call sites annotated
-// // TODO KORAI SDK). KoraiClient will implement the same interface against
-// the Korai P2P SDK. A StranglerClient can wrap both for gradual migration.
+// KoraiClient implements Client against the Korai P2P inference SDK. No korai.*
+// type crosses this boundary; everything is converted to apiclient's own types.
 type Client interface {
 	// Complete sends req to the inference backend and returns a channel of
 	// streaming events. The channel is closed when the stream ends or ctx is

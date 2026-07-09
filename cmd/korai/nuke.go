@@ -56,7 +56,7 @@ func nukeSetCmd() *cobra.Command {
 				return fmt.Errorf("locating home directory: %w", err)
 			}
 			out := cmd.OutOrStdout()
-			_, _ = fmt.Fprint(out, "Set a duress nuke code (distinct from any password you use normally):\n> ")
+			fmt.Fprint(out, "Set a duress nuke code (distinct from any password you use normally):\n> ")
 			code, err := readLine(cmd.InOrStdin())
 			if err != nil {
 				return fmt.Errorf("reading nuke code: %w", err)
@@ -64,7 +64,7 @@ func nukeSetCmd() *cobra.Command {
 			if err := synckey.SetNukeVerifier(home, code); err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(out, "\nNuke armed. Verifier stored at %s. Entering this code with `korai nuke` wipes everything.\n",
+			fmt.Fprintf(out, "\nNuke armed. Verifier stored at %s. Entering this code with `korai nuke` wipes everything.\n",
 				synckey.NukeVerifierPath(home))
 			return nil
 		},
@@ -80,7 +80,7 @@ func runNuke(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("locating home directory: %w", err)
 	}
 	out := cmd.OutOrStdout()
-	_, _ = fmt.Fprint(out, "Enter nuke code: ")
+	fmt.Fprint(out, "Enter nuke code: ")
 	code, err := readLine(cmd.InOrStdin())
 	if err != nil {
 		return fmt.Errorf("reading nuke code: %w", err)
@@ -97,12 +97,12 @@ func runNuke(cmd *cobra.Command, _ []string) error {
 
 	wd, _ := os.Getwd()
 	report := performNuke(cmd.Context(), home, wd)
-	_, _ = fmt.Fprintf(out, "\nNuke complete. Key shredded=%t; %d path(s) removed; remote wiped=%t.\n",
+	fmt.Fprintf(out, "\nNuke complete. Key shredded=%t; %d path(s) removed; remote wiped=%t.\n",
 		report.KeyShredded, len(report.Removed), report.RemoteWiped)
 	for _, e := range report.Errs {
 		// Best-effort steps: report but do not fail — the crypto-shred already
 		// made remote ciphertext unreadable.
-		_, _ = fmt.Fprintf(out, "  (non-fatal) %v\n", e)
+		fmt.Fprintf(out, "  (non-fatal) %v\n", e)
 	}
 	return nil
 }

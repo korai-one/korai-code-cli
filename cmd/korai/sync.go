@@ -77,7 +77,7 @@ func syncSetupCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "\nSync enabled in %s.\n", path)
 			if url == "" && strings.TrimSpace(os.Getenv("KORAI_SYNC_URL")) == "" {
-				_, _ = fmt.Fprintln(out, "Set the hub URL with --url or the KORAI_SYNC_URL env var to start syncing.")
+				fmt.Fprintln(out, "Set the hub URL with --url or the KORAI_SYNC_URL env var to start syncing.")
 			}
 			return nil
 		},
@@ -101,7 +101,7 @@ func syncJoinCmd() *cobra.Command {
 				return fmt.Errorf("locating home directory: %w", err)
 			}
 			out := cmd.OutOrStdout()
-			_, _ = fmt.Fprint(out, "Enter the 24-word recovery mnemonic:\n> ")
+			fmt.Fprint(out, "Enter the 24-word recovery mnemonic:\n> ")
 			line, err := readLine(cmd.InOrStdin())
 			if err != nil {
 				return fmt.Errorf("reading mnemonic: %w", err)
@@ -147,7 +147,7 @@ func syncQRCmd() *cobra.Command {
 				return fmt.Errorf("no sync key configured; run `korai sync setup` first")
 			}
 			out := cmd.OutOrStdout()
-			_, _ = fmt.Fprintln(out, "Scan to adopt this sync namespace on another device:")
+			fmt.Fprintln(out, "Scan to adopt this sync namespace on another device:")
 			return synckey.RenderQR(out, key)
 		},
 	}
@@ -177,7 +177,7 @@ func syncExportRecoveryCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(out, "\nRecovery blob written to %s (keep it somewhere safe).\n", path)
-			_, _ = fmt.Fprintln(out, "Note: hub-stored recovery (recover with no surviving device) is a documented follow-up; this export is local only.")
+			fmt.Fprintln(out, "Note: hub-stored recovery (recover with no surviving device) is a documented follow-up; this export is local only.")
 			return nil
 		},
 	}
