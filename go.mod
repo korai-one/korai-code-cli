@@ -7,7 +7,6 @@ require (
 	charm.land/bubbletea/v2 v2.0.7
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.4
-	github.com/anthropics/anthropic-sdk-go v1.50.2
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260628005914-6eb80f72a239
 	github.com/charmbracelet/x/powernap v0.1.6
 	github.com/coder/websocket v1.8.15
@@ -15,13 +14,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/joho/godotenv v1.5.1
-	github.com/korai-one/korai-sdk-go v0.2.0
+	github.com/korai-one/korai-sdk-go v0.4.0
+	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/spf13/cobra v1.10.2
+	github.com/tyler-smith/go-bip39 v1.1.0
+	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.21.0
-	modernc.org/sqlite v1.53.0
 )
 
 require (
@@ -62,21 +63,19 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sourcegraph/jsonrpc2 v0.2.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.1 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/term v0.44.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.53.0 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )

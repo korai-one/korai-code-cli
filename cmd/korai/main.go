@@ -150,6 +150,9 @@ func rootCmd() *cobra.Command {
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
 
 	root.AddCommand(serveCmd())
+	root.AddCommand(syncCmd())
+	root.AddCommand(teleportCmd())
+	root.AddCommand(nukeCmd())
 
 	return root
 }
@@ -249,6 +252,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		WithImageAttacher(sess.imageAttacher).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
 		WithSnapshotter(sess.snapshots, sess.snaplog).
+		WithActiveSync(sess.activeSyncInterval).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
 	// v2: alt-screen + mouse mode are requested per-frame on the Model's View,
 	// not as NewProgram options.
