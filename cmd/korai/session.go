@@ -89,29 +89,33 @@ var koraiModels = []string{"auto", "fast", "balanced", "deep"}
 // defaultKoraiModel is the model used when neither a flag nor config selects one.
 const defaultKoraiModel = "auto"
 
-// defaultKoraiBaseURL is the orchestrator the CLI targets when KORAI_BASE_URL is
-// not set. It points at the current EU deployment rather than the SDK's own
-// cloud default; set KORAI_BASE_URL to override.
+// defaultKoraiBaseURL is the orchestrator (API) origin the CLI targets when
+// KORAI_BASE_URL is not set. It points at the current EU deployment rather than
+// the SDK's own cloud default; set KORAI_BASE_URL to override. The /oauth/*
+// endpoints and inference both live here.
 const defaultKoraiBaseURL = "https://korai-eu.fly.dev"
 
-// requireAPIKey verifies a Korai API key is present for the networked backend.
-// The local-worker path needs none, so callers skip it in that mode. Returns an
-// error when KORAI_API_KEY is missing.
-func requireAPIKey() error {
-	if os.Getenv("KORAI_API_KEY") == "" {
-		return fmt.Errorf("no API key set: export KORAI_API_KEY or put it in a .env file")
+// defaultKoraiWebURL is the web app origin (the human consent page) the browser
+// is pointed at during `korai login` when KORAI_WEB_URL is not set. For local
+// dev this is typically http://localhost:3030.
+const defaultKoraiWebURL = "https://korai.one"
+
+// orchestratorBaseURL resolves the orchestrator (API) origin: KORAI_BASE_URL,
+// else the default deployment.
+func orchestratorBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("KORAI_BASE_URL")); v != "" {
+		return v
 	}
-	return nil
+	return defaultKoraiBaseURL
 }
 
-// newKoraiClient constructs the KoraiClient, reading the API key and optional
-// base URL from the environment.
-func newKoraiClient(model string) apiclient.Client {
-	baseURL := os.Getenv("KORAI_BASE_URL")
-	if baseURL == "" {
-		baseURL = defaultKoraiBaseURL
+// webBaseURL resolves the web app origin (the browser consent page):
+// KORAI_WEB_URL, else the production site. Only `korai login` uses it.
+func webBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("KORAI_WEB_URL")); v != "" {
+		return v
 	}
-	return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), baseURL, model)
+	return defaultKoraiWebURL
 }
 
 // close releases session resources (e.g. MCP server connections).
@@ -148,8 +152,6 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 
 	if useLocal {
 		slog.Info("using local worker", "url", localURL)
-	} else if err := requireAPIKey(); err != nil {
-		return nil, err
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -183,13 +185,18 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	lspEnabled := settings.LSP == nil || *settings.LSP
 	lspMgr := lsp.New(lspEnabled)
 	deps := tool.Deps{WorkDir: wd, LSP: lspMgr}
-	// The local worker needs no API key; the networked backends read theirs from
-	// the environment via newClient.
+	// The local worker needs no credential; the networked backend uses the login
+	// token (~/.korai/auth.json, auto-refreshed) when present, else KORAI_API_KEY.
 	var client apiclient.Client
 	if useLocal {
 		client = apiclient.NewKoraiClient("", localURL, model)
 	} else {
-		client = newKoraiClient(model)
+		baseURL := orchestratorBaseURL()
+		bearer, berr := resolveBearer(ctx, home, baseURL)
+		if berr != nil {
+			return nil, berr
+		}
+		client = apiclient.NewKoraiClient(bearer, baseURL, model)
 	}
 	models := apiclient.NewModelSelector(model)
 	modes := perm.NewModeSelector(mode)
@@ -531,6 +538,10 @@ func buildCommands(home, wd string, registry *tool.Registry, modelList []string,
 	reg.Register(command.NewResumeCommand(func() string { return formatSessions(sessStore, wd) }))
 	reg.Register(command.NewRevertCommand())
 	reg.Register(command.NewSnapshotsCommand(snapLog.Render))
+	// Cross-device login: /login authorizes this device via the browser (or a
+	// device code when headless); /logout revokes and forgets the token.
+	reg.Register(newLoginCommand(home))
+	reg.Register(newLogoutCommand(home))
 
 	// Bundled skills first, then discovered skills (which override by name).
 	if builtins, err := skill.Builtins(); err != nil {
