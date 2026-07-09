@@ -149,6 +149,8 @@ func rootCmd() *cobra.Command {
 	root.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
 
+	root.AddCommand(loginCmd())
+	root.AddCommand(logoutCmd())
 	root.AddCommand(serveCmd())
 	root.AddCommand(syncCmd())
 	root.AddCommand(teleportCmd())
