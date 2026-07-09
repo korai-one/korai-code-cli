@@ -113,8 +113,12 @@ func performNuke(ctx context.Context, home, projectDir string) synckey.WipeRepor
 
 	var remotePurge func(context.Context) error
 	if url := resolveHubURL(home); url != "" && len(key) == synckey.KeyLen {
-		client := synchub.NewClient(url, synckey.DeriveSyncID(key), nil)
-		remotePurge = client.WipeRemote
+		// Sign the purge with K_folder (v0.4.0): PostNuke posts the cryptographically
+		// verifiable fleet-wide nuke marker AND soft-deletes the namespace hub-side in
+		// one transaction, so every other device self-destructs on its next pull
+		// (ErrNamespaceNuked). Supersedes the old unsigned WipeRemote/DELETE.
+		client := synchub.NewClient(url, synckey.DeriveSyncID(key), key, nil)
+		remotePurge = client.PostNuke
 	}
 
 	return synckey.Wipe(ctx, key, synckey.DefaultWipePaths(home, projectDir), remotePurge)

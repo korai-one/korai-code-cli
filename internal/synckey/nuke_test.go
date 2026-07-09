@@ -86,13 +86,17 @@ func TestWipeShredsPurgesAndCallsRemote(t *testing.T) {
 	mustWrite(t, filepath.Join(korai, "sync-cursor"), "42")
 	mustWrite(t, filepath.Join(project, ".korai", "MEMORY.md"), "secret memory")
 
-	// Mock hub that records a DELETE /v1/sync with the derived bearer.
-	var deleteCalled bool
-	var gotAuth string
+	// Mock hub that records the signed fleet-nuke POST /v1/sync/nuke (v0.4.0):
+	// PostNuke sets the nuke marker + soft-deletes in one txn, superseding the
+	// old unsigned DELETE.
+	var nukeCalled bool
+	var gotAuth, gotPubkey, gotSig string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete && r.URL.Path == "/v1/sync" {
-			deleteCalled = true
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/sync/nuke" {
+			nukeCalled = true
 			gotAuth = r.Header.Get("Authorization")
+			gotPubkey = r.Header.Get("X-Korai-Sync-Pubkey")
+			gotSig = r.Header.Get("X-Korai-Sync-Sig")
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -100,8 +104,8 @@ func TestWipeShredsPurgesAndCallsRemote(t *testing.T) {
 
 	// Capture the expected bearer before Wipe zeroizes the key.
 	wantBearer := "Bearer " + synckey.DeriveSyncID(key)
-	client := synchub.NewClient(srv.URL, synckey.DeriveSyncID(key), srv.Client())
-	report := synckey.Wipe(context.Background(), key, synckey.DefaultWipePaths(home, project), client.WipeRemote)
+	client := synchub.NewClient(srv.URL, synckey.DeriveSyncID(key), key, srv.Client())
+	report := synckey.Wipe(context.Background(), key, synckey.DefaultWipePaths(home, project), client.PostNuke)
 
 	// Key zeroized in memory.
 	if !report.KeyShredded {
@@ -126,12 +130,17 @@ func TestWipeShredsPurgesAndCallsRemote(t *testing.T) {
 		}
 	}
 
-	// Remote purge happened with the derived bearer.
-	if !deleteCalled {
-		t.Error("hub DELETE /v1/sync was not called")
+	// Remote purge happened: the signed fleet-nuke marker was posted.
+	if !nukeCalled {
+		t.Error("hub POST /v1/sync/nuke was not called")
 	}
 	if gotAuth != wantBearer {
 		t.Errorf("bearer header = %q, want %q", gotAuth, wantBearer)
+	}
+	// The nuke is signed with K_folder (attack-model T5/T11): both write-signature
+	// headers must be present, else a bearer-only sender could forge a fleet wipe.
+	if gotPubkey == "" || gotSig == "" {
+		t.Errorf("nuke not signed: pubkey=%q sig=%q", gotPubkey, gotSig)
 	}
 	if !report.RemoteWiped {
 		t.Error("report.RemoteWiped is false despite a 200 from the hub")
