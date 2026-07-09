@@ -83,7 +83,7 @@ func VerifyNukeCode(home, code string) (bool, error) {
 	}
 	q, err := url.ParseQuery(rest)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrVerifierFormat, err)
+		return false, fmt.Errorf("%w: %w", ErrVerifierFormat, err)
 	}
 	p, err := parseArgon2Params(q)
 	if err != nil {

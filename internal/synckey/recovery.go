@@ -79,7 +79,7 @@ func UnwrapRecovery(blob, passphrase string) ([]byte, error) {
 	}
 	q, err := url.ParseQuery(rest)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRecoveryFormat, err)
+		return nil, fmt.Errorf("%w: %w", ErrRecoveryFormat, err)
 	}
 	p, err := parseArgon2Params(q)
 	if err != nil {
