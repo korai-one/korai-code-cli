@@ -129,6 +129,11 @@ type Model struct {
 	sessionID    string
 	sessionStart time.Time
 
+	// activeSyncInterval is the cadence at which the open conversation is
+	// re-saved so the background sync cycle can push it mid-session. Zero
+	// disables the periodic checkpoint (sync is off).
+	activeSyncInterval time.Duration
+
 	// snapshots takes a shadow-git checkpoint of the worktree before each turn;
 	// snaplog records the (label, id) of each so /snapshots can list them and
 	// /revert can restore one. Both nil when snapshots are disabled (no git).
@@ -294,6 +299,14 @@ func (m Model) WithSnapshotter(mgr *snapshot.Manager, log *snapshot.Log) Model {
 	return m
 }
 
+// WithActiveSync sets the cadence at which the open conversation is re-saved so
+// the background sync cycle pushes it mid-session. Zero (the default) disables
+// the periodic checkpoint. Call before tea.NewProgram.
+func (m Model) WithActiveSync(interval time.Duration) Model {
+	m.activeSyncInterval = interval
+	return m
+}
+
 // WithSession seeds the active session id, its creation time, and any prior
 // history (e.g. from --resume or --continue). Call before tea.NewProgram.
 func (m Model) WithSession(id string, created time.Time, history []apiclient.Message) Model {
@@ -318,6 +331,9 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink, waitForPermission(m.asker)}
 	if m.planApprover != nil {
 		cmds = append(cmds, waitForPlan(m.planApprover))
+	}
+	if c := m.scheduleActiveSync(); c != nil {
+		cmds = append(cmds, c)
 	}
 	return tea.Batch(cmds...)
 }
@@ -385,6 +401,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.input.Placeholder = "Ask Korai…"
 		return m, nil
+	case activeSyncTickMsg:
+		// Periodically persist the open conversation so the background sync cycle
+		// sweeps it up mid-session — a peer can pick it up before the turn that
+		// ends it. Best-effort: the save runs in a Cmd and swallows its own
+		// errors, and we always reschedule so the REPL is never disrupted.
+		cmds := []tea.Cmd{m.scheduleActiveSync()}
+		if len(m.history) > 0 {
+			cmds = append(cmds, m.saveCmd())
+		}
+		return m, tea.Batch(cmds...)
 	case resumeLoadedMsg:
 		if msg.err != nil {
 			m.addEntry(kindError, "resume failed: "+msg.err.Error())
@@ -1076,6 +1102,18 @@ func (m Model) startResume(id string) (tea.Model, tea.Cmd) {
 		msgs, created, err := loader(id)
 		return resumeLoadedMsg{id: id, created: created, messages: msgs, err: err}
 	}
+}
+
+// scheduleActiveSync arms a one-shot timer that fires an activeSyncTickMsg after
+// the configured cadence; the handler re-arms it, forming a periodic checkpoint.
+// Returns nil when the periodic checkpoint is disabled (interval <= 0).
+func (m Model) scheduleActiveSync() tea.Cmd {
+	if m.activeSyncInterval <= 0 {
+		return nil
+	}
+	return tea.Tick(m.activeSyncInterval, func(time.Time) tea.Msg {
+		return activeSyncTickMsg{}
+	})
 }
 
 // saveCmd persists the current conversation, if a saver is wired.

@@ -174,7 +174,12 @@ func rootCmd() *cobra.Command {
 	root.Flags().StringVar(&localWorkerAddr, "local-worker-addr", "",
 		"route inference to a home/LAN inference server over the direct binary channel (host:port; token via KORAI_LOCAL_WORKER_TOKEN)")
 
+	root.AddCommand(loginCmd())
+	root.AddCommand(logoutCmd())
 	root.AddCommand(serveCmd())
+	root.AddCommand(syncCmd())
+	root.AddCommand(teleportCmd())
+	root.AddCommand(nukeCmd())
 
 	return root
 }
@@ -306,6 +311,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 		WithImageAttacher(sess.imageAttacher).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).
 		WithSnapshotter(sess.snapshots, sess.snaplog).
+		WithActiveSync(sess.activeSyncInterval).
 		WithSession(sess.sessionID, sess.sessionStart, sess.initialHistory)
 	// v2: alt-screen + mouse mode are requested per-frame on the Model's View,
 	// not as NewProgram options.

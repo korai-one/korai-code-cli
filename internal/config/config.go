@@ -32,6 +32,11 @@ type Settings struct {
 	// reaches the terminal. nil enables it with defaults; set enabled=false to
 	// turn it off.
 	Condense *CondenseSettings `json:"condense,omitempty"`
+	// Sync is the optional cross-device history-sync block. Absent (nil) means
+	// sync is off, which is the default; env vars (KORAI_SYNC_*) can still
+	// enable it. The content key is never read from here — only from
+	// KORAI_SYNC_KEY or ~/.korai/sync.key. See internal/synchub.
+	Sync *SyncSettings `json:"sync,omitempty"`
 }
 
 // CondenseSettings configures tool-output condensing (see Settings.Condense).
@@ -48,6 +53,22 @@ type CondenseSettings struct {
 	// truncating.
 	HeadLines int `json:"headLines,omitempty"`
 	TailLines int `json:"tailLines,omitempty"`
+}
+
+// SyncSettings is the settings-file form of the opt-in history-sync
+// configuration. It intentionally omits the content key so a shared or
+// committed settings file never carries key material.
+type SyncSettings struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	URL      string `json:"url,omitempty"`
+	SyncID   string `json:"syncId,omitempty"`
+	Interval string `json:"interval,omitempty"` // Go duration, e.g. "30s"
+	// ActiveSyncInterval is how often the currently-open conversation is
+	// re-saved so the background sync cycle sweeps it up mid-session (a peer can
+	// pick it up before the turn that ends it, not only afterwards). A Go
+	// duration ("3m") or a bare integer of seconds; empty means the built-in
+	// default. The KORAI_SYNC_ACTIVE_INTERVAL env var overrides it.
+	ActiveSyncInterval string `json:"activeSyncInterval,omitempty"`
 }
 
 // HookSpec is one shell command to run for a lifecycle event. Plain data; the
@@ -132,6 +153,10 @@ func Merge(base, override Settings) Settings {
 	// can flip it on or off without inheriting the earlier layer's tuning.
 	if override.Condense != nil {
 		merged.Condense = override.Condense
+	}
+
+	if override.Sync != nil {
+		merged.Sync = override.Sync
 	}
 
 	return merged

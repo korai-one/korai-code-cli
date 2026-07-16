@@ -369,19 +369,41 @@ func (s *server) worker(
 		return err == nil
 	}
 
-	for act := range actions {
-		switch act.Type {
-		case proto.TypeMessage:
-			if !runTurn(act.Text) {
-				return
-			}
-		case proto.TypeSlash:
-			submit, ok := s.runSlash(ctx, act.Cmd, act.Text, send, &history, &sessionID, &sessionStart)
+	// Periodic active-session checkpoint: re-persist the open conversation on a
+	// cadence so the background syncer pushes it mid-session (a peer can pick it
+	// up before the turn that ends it). The save runs in this single history-
+	// owning goroutine, so it needs no lock; it swallows its own errors. A zero
+	// interval (sync off) leaves tickC nil, and a nil channel never fires.
+	var tickC <-chan time.Time
+	if s.sess.activeSyncInterval > 0 {
+		t := time.NewTicker(s.sess.activeSyncInterval)
+		defer t.Stop()
+		tickC = t.C
+	}
+
+	for {
+		select {
+		case act, ok := <-actions:
 			if !ok {
-				continue
-			}
-			if submit != "" && !runTurn(submit) {
 				return
+			}
+			switch act.Type {
+			case proto.TypeMessage:
+				if !runTurn(act.Text) {
+					return
+				}
+			case proto.TypeSlash:
+				submit, ok := s.runSlash(ctx, act.Cmd, act.Text, send, &history, &sessionID, &sessionStart)
+				if !ok {
+					continue
+				}
+				if submit != "" && !runTurn(submit) {
+					return
+				}
+			}
+		case <-tickC:
+			if len(history) > 0 {
+				s.sess.saver(sessionID, sessionStart, history)
 			}
 		}
 	}

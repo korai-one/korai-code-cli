@@ -1,6 +1,6 @@
 // Package apiclient is the sole point of contact with the inference backend.
-// Backend SDK types (e.g. korai-sdk-go) must never cross this package boundary;
-// all callers use the types defined here.
+// No backend SDK types (korai-sdk-go) may cross this package boundary; all
+// callers use the types defined here.
 package apiclient
 
 import "encoding/json"

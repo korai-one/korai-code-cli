@@ -6,10 +6,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+
+	korai "github.com/korai-one/korai-sdk-go"
+	sdksession "github.com/korai-one/korai-sdk-go/session"
+	"github.com/korai-one/korai-sdk-go/session/synchub"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
@@ -75,6 +80,11 @@ type assembled struct {
 	saver          func(id string, created time.Time, msgs []apiclient.Message)
 	resumeLoad     func(id string) ([]apiclient.Message, time.Time, error)
 
+	// activeSyncInterval is the cadence at which the long-running loops (TUI,
+	// serve) re-persist the open conversation so the background syncer pushes it
+	// mid-session. Zero disables the periodic checkpoint (sync is off).
+	activeSyncInterval time.Duration
+
 	snapshots *snapshot.Manager
 	snaplog   *snapshot.Log
 }
@@ -84,33 +94,50 @@ type assembled struct {
 // round-trip at startup; the aliases are always valid.
 var koraiModels = []string{"auto", "fast", "balanced", "deep"}
 
-// koraiDefaultModel is the model used when neither a flag nor config selects one.
-const koraiDefaultModel = "auto"
+// defaultKoraiModel is the model used when neither a flag nor config selects one.
+const defaultKoraiModel = "auto"
 
-// remoteConfigured reports whether the networked Korai backend can be reached:
-// it needs KORAI_API_KEY. A keyless session still assembles (a local worker, or
-// auth deferred to the first remote turn), so callers treat the error as
-// non-fatal rather than aborting startup.
-func remoteConfigured() error {
-	if os.Getenv("KORAI_API_KEY") == "" {
-		return fmt.Errorf("no API key set: export KORAI_API_KEY, put it in a .env file, or run against a local worker (--local)")
-	}
-	return nil
-}
-
-// defaultKoraiBaseURL is the orchestrator the CLI targets when KORAI_BASE_URL is
-// not set. It points at the current EU deployment rather than the SDK's own
-// cloud default; set KORAI_BASE_URL to override.
+// defaultKoraiBaseURL is the orchestrator (API) origin the CLI targets when
+// KORAI_BASE_URL is not set. It points at the current EU deployment rather than
+// the SDK's own cloud default; set KORAI_BASE_URL to override. The /oauth/*
+// endpoints and inference both live here.
 const defaultKoraiBaseURL = "https://korai-eu.fly.dev"
 
-// newKoraiClient constructs the networked Korai backend client, reading the key
-// and the optional base URL from the environment.
-func newKoraiClient(model string) apiclient.Client {
-	baseURL := os.Getenv("KORAI_BASE_URL")
-	if baseURL == "" {
-		baseURL = defaultKoraiBaseURL
+// defaultKoraiWebURL is the web app origin (the human consent page) the browser
+// is pointed at during `korai login` when KORAI_WEB_URL is not set. For local
+// dev this is typically http://localhost:3030.
+const defaultKoraiWebURL = "https://korai.one"
+
+// orchestratorBaseURL resolves the orchestrator (API) origin: KORAI_BASE_URL,
+// else the default deployment.
+func orchestratorBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("KORAI_BASE_URL")); v != "" {
+		return v
 	}
-	return apiclient.NewKoraiClient(os.Getenv("KORAI_API_KEY"), baseURL, model)
+	return defaultKoraiBaseURL
+}
+
+// webBaseURL resolves the web app origin (the browser consent page):
+// KORAI_WEB_URL, else the production site. Only `korai login` uses it.
+func webBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("KORAI_WEB_URL")); v != "" {
+		return v
+	}
+	return defaultKoraiWebURL
+}
+
+// newKoraiClient constructs the networked Korai backend client. The credential
+// is the login token in ~/.korai/auth.json (auto-refreshed) when present, else
+// KORAI_API_KEY; it returns an error only when neither is available, so a
+// keyless session can still assemble on a local worker (the error is deferred to
+// the first remote turn via authGate). See resolveBearer.
+func newKoraiClient(ctx context.Context, home, model string) (apiclient.Client, error) {
+	baseURL := orchestratorBaseURL()
+	bearer, err := resolveBearer(ctx, home, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.NewKoraiClient(bearer, baseURL, model), nil
 }
 
 // close releases session resources (e.g. MCP server connections).
@@ -158,12 +185,6 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		return nil, fmt.Errorf("--local: no local worker found (start one, or set --local-worker-url / --local-worker-addr, or KORAI_LOCAL_WORKER_URL / KORAI_LOCAL_WORKER_ADDR)")
 	}
 
-	// The networked backend is resolved best-effort so /worker_mode can switch to
-	// it even when the session starts on a local worker. A missing key is no
-	// longer fatal here: a keyless session still assembles, and the auth check is
-	// deferred to the first remote turn (see authGate below).
-	remoteErr := remoteConfigured()
-
 	if useLocal {
 		if endpoint.IsDirect() {
 			slog.Info("using local worker", "network", endpoint.Network, "address", endpoint.Address)
@@ -188,7 +209,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		model = settings.Model
 	}
 	if model == "" {
-		model = koraiDefaultModel
+		model = defaultKoraiModel
 	}
 	mode := opts.permMode
 	if !opts.permModeSet {
@@ -205,7 +226,8 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	deps := tool.Deps{WorkDir: wd, LSP: lspMgr}
 	// Build whichever backends are available and expose both through a
 	// ClientSelector so /worker_mode can switch between them at runtime. The local
-	// worker needs no API key; the networked backend reads its key via newKoraiClient.
+	// worker needs no credential; the networked backend uses the login token
+	// (~/.korai/auth.json, auto-refreshed) when present, else KORAI_API_KEY.
 	var localClient apiclient.Client
 	if useLocal {
 		switch {
@@ -220,10 +242,12 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 			localClient = apiclient.NewKoraiClient("", endpoint.URL, model)
 		}
 	}
-	var remoteClient apiclient.Client
-	if remoteErr == nil {
-		remoteClient = newKoraiClient(model)
-	}
+	// The networked backend is resolved best-effort so /worker_mode can switch to
+	// it even when the session starts on a local worker. A missing credential is
+	// not fatal here: a keyless local session still assembles, and the auth check
+	// is deferred to the first remote turn (see authGate). The bearer is the login
+	// token when present, else KORAI_API_KEY (see newKoraiClient / resolveBearer).
+	remoteClient, remoteErr := newKoraiClient(ctx, home, model)
 	activeMode := apiclient.WorkerRemote
 	if useLocal {
 		activeMode = apiclient.WorkerLocal
@@ -231,8 +255,8 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	clientSelector := apiclient.NewClientSelector(activeMode, localClient, remoteClient)
 	var client apiclient.Client = clientSelector
 
-	// authGate defers the API-key requirement to the first prompt: a session on a
-	// local worker (or one that later switches to it) needs no key, but a remote
+	// authGate defers the credential requirement to the first prompt: a session on
+	// a local worker (or one that later switches to it) needs none, but a remote
 	// turn does. It re-reads the active mode each call so /worker_mode is honored.
 	authGate := func() error {
 		if clientSelector.Mode() == string(apiclient.WorkerRemote) && remoteClient == nil {
@@ -295,31 +319,42 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	snapMgr := snapshot.New(ctx, wd, snapshotsDir(home))
 	snapLog := &snapshot.Log{}
 
-	// Session persistence: resolve the session to use (resume / continue / new).
-	// Sessions persist to SQLite; if the database cannot be opened, fall back to
-	// the JSONL file store so a storage error never blocks a session.
-	var sessStore session.Store
-	if sq, serr := session.NewSQLiteStore(ctx, sessionsDBPath(home)); serr == nil {
-		sessStore = sq
-	} else {
-		slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
-		sessStore = session.NewFileStore(sessionsDir(home))
+	// Cross-device history sync (opt-in; OFF by default). When enabled it
+	// encrypts sessions at rest with the sync content key and starts a
+	// background client that replicates them through the blind hub. When
+	// disabled (the default) the store uses no codec and no goroutine or network
+	// call happens — zero behavior change.
+	sessStore, syncCfg := openSyncedStore(ctx, home, syncFileSettings(settings.Sync))
+
+	var activeSyncInterval time.Duration
+	if syncCfg.Enabled {
+		if syncer, serr := synchub.New(syncCfg, sessStore, slog.Default()); serr != nil {
+			slog.Warn("sync client disabled", "error", serr)
+		} else if syncer != nil {
+			go syncer.Run(ctx)
+			slog.Info("cross-device history sync enabled", "interval", syncCfg.Interval)
+		}
+		// The long-running loops re-persist the open conversation on this cadence
+		// so the syncer sweeps it up before the turn that ends it. Only meaningful
+		// when sync is on, so it stays zero (disabled) otherwise.
+		activeSyncInterval = resolveActiveSyncInterval(settings.Sync)
 	}
 	sessionID, sessionStart, initialHistory := resolveSession(sessStore, wd, opts)
 	saver := func(id string, created time.Time, msgs []apiclient.Message) {
-		if err := sessStore.Save(session.Record{
+		if err := sessStore.Save(korai.Session{
 			ID: id, Created: created, Updated: time.Now(),
-			CWD: wd, Model: models.Get(), Messages: msgs,
+			CWD: wd, Model: models.Get(), Tool: session.Tool,
+			Messages: session.ToCanonicalMessages(msgs),
 		}); err != nil {
 			slog.Warn("saving session", "error", err)
 		}
 	}
 	resumeLoad := func(id string) ([]apiclient.Message, time.Time, error) {
-		rec, err := sessStore.Load(id)
+		sess, err := sessStore.Load(id)
 		if err != nil {
 			return nil, time.Time{}, err
 		}
-		return rec.Messages, rec.Created, nil
+		return session.FromCanonicalMessages(sess.Messages), sess.Created, nil
 	}
 
 	return &assembled{
@@ -348,9 +383,113 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		saver:          saver,
 		resumeLoad:     resumeLoad,
 
+		activeSyncInterval: activeSyncInterval,
+
 		snapshots: snapMgr,
 		snaplog:   snapLog,
 	}, nil
+}
+
+// syncFileSettings maps the optional config "sync" block onto the synchub
+// settings form. A nil block yields the zero value (disabled unless env
+// enables it).
+func syncFileSettings(s *config.SyncSettings) synchub.FileSettings {
+	if s == nil {
+		return synchub.FileSettings{}
+	}
+	return synchub.FileSettings{
+		Enabled:  s.Enabled,
+		URL:      s.URL,
+		SyncID:   s.SyncID,
+		Interval: s.Interval,
+	}
+}
+
+// openSyncedStore resolves the cross-device sync configuration and opens the
+// canonical session store with the matching at-rest codec, so that
+// encrypted-on-disk sessions synced in from other surfaces (kode web, the
+// dashboard) decode on read. It returns the store plus the resolved sync config
+// (Enabled=false when sync is off) so the caller can also start the background
+// syncer. It never fails: a SQLite open error falls back to the JSONL file
+// store, and a bad sync config is logged and treated as disabled. Both assemble
+// and the teleport lister open the store through here so they see the same data.
+func openSyncedStore(ctx context.Context, home string, fs synchub.FileSettings) (sdksession.Store, synchub.Config) {
+	syncCfg, syncErr := synchub.Resolve(home, fs)
+	if syncErr != nil {
+		slog.Warn("sync configuration ignored", "error", syncErr)
+	}
+	var syncCodec sdksession.Codec
+	if syncCfg.Enabled {
+		if c, cerr := sdksession.NewEncryptingCodec(syncCfg.Key); cerr == nil {
+			syncCodec = c
+		} else {
+			slog.Warn("sync encryption disabled", "error", cerr)
+			syncCfg.Enabled = false
+		}
+	}
+
+	// Sessions persist to SQLite in the shared SDK's canonical korai.Session
+	// format (teleport-compatible); if the database cannot be opened, fall back
+	// to the JSONL file store so a storage error never blocks a session.
+	sq, serr := sdksession.NewSQLiteStore(ctx, sessionsDBPath(home))
+	if serr == nil {
+		if syncCodec != nil {
+			sq.WithCodec(syncCodec)
+		}
+		return sq, syncCfg
+	}
+	slog.Warn("opening sqlite session store; falling back to file store", "error", serr)
+	fs2 := sdksession.NewFileStore(sessionsDir(home))
+	if syncCodec != nil {
+		fs2.WithCodec(syncCodec)
+	}
+	return fs2, syncCfg
+}
+
+// defaultActiveSyncInterval is the cadence at which the open conversation is
+// checkpointed (re-saved so the sync cycle sweeps it up) when neither config nor
+// env overrides it.
+const defaultActiveSyncInterval = 3 * time.Minute
+
+// minActiveSyncInterval clamps overly aggressive checkpointing so a misconfigured
+// value cannot hammer the store or the hub.
+const minActiveSyncInterval = 15 * time.Second
+
+// resolveActiveSyncInterval picks the active-session checkpoint cadence:
+// KORAI_SYNC_ACTIVE_INTERVAL wins, then the config sync.activeSyncInterval field,
+// else the default. Values parse as a Go duration ("3m") or a bare integer of
+// seconds; an unparseable value falls back to the default rather than failing
+// the session.
+func resolveActiveSyncInterval(s *config.SyncSettings) time.Duration {
+	raw := strings.TrimSpace(os.Getenv("KORAI_SYNC_ACTIVE_INTERVAL"))
+	if raw == "" && s != nil {
+		raw = strings.TrimSpace(s.ActiveSyncInterval)
+	}
+	if raw == "" {
+		return defaultActiveSyncInterval
+	}
+	d, err := parseDurationOrSeconds(raw)
+	if err != nil {
+		slog.Warn("invalid active-sync interval; using default", "value", raw, "error", err)
+		return defaultActiveSyncInterval
+	}
+	if d < minActiveSyncInterval {
+		d = minActiveSyncInterval
+	}
+	return d
+}
+
+// parseDurationOrSeconds accepts a Go duration ("3m") or a bare integer count of
+// seconds ("180"), mirroring the hub poll-interval parser.
+func parseDurationOrSeconds(s string) (time.Duration, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return d, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("want a duration like 3m or an integer of seconds")
+	}
+	return time.Duration(n) * time.Second, nil
 }
 
 // sessionsDir returns the directory where JSONL sessions are stored (the
@@ -373,40 +512,40 @@ func snapshotsDir(home string) string {
 // resolveSession picks the session to use: an explicit --resume id, the latest
 // session for the directory with --continue, or a fresh session otherwise. On
 // any resume failure it logs and falls back to a new session.
-func resolveSession(store session.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
+func resolveSession(store sdksession.Store, wd string, opts runOptions) (id string, created time.Time, history []apiclient.Message) {
 	switch {
 	case opts.resumeID != "":
-		rec, err := store.Load(opts.resumeID)
+		sess, err := store.Load(opts.resumeID)
 		if err == nil {
-			return rec.ID, rec.Created, rec.Messages
+			return sess.ID, sess.Created, session.FromCanonicalMessages(sess.Messages)
 		}
 		slog.Warn("could not resume session; starting fresh", "id", opts.resumeID, "error", err)
 	case opts.cont:
-		if rec, ok, err := store.Latest(wd); err == nil && ok {
-			return rec.ID, rec.Created, rec.Messages
+		if sess, ok, err := store.Latest(wd); err == nil && ok {
+			return sess.ID, sess.Created, session.FromCanonicalMessages(sess.Messages)
 		}
 	}
 	return session.NewID(), time.Now(), nil
 }
 
 // formatSessions renders the saved-session list for /resume.
-func formatSessions(store session.Store, wd string) string {
-	records, err := store.List()
+func formatSessions(store sdksession.Store, wd string) string {
+	sessions, err := store.List()
 	if err != nil {
 		return "could not list sessions: " + err.Error()
 	}
-	if len(records) == 0 {
+	if len(sessions) == 0 {
 		return "No saved sessions yet."
 	}
 	var b strings.Builder
 	b.WriteString("Saved sessions (newest first) — /resume <id> to load:")
 	shown := 0
-	for _, r := range records {
-		if r.CWD != wd {
+	for _, s := range sessions {
+		if s.CWD != wd {
 			continue
 		}
 		fmt.Fprintf(&b, "\n  %s  %s  (%d msgs)  %s",
-			r.ID, r.Updated.Local().Format("2006-01-02 15:04"), len(r.Messages), firstUserText(r.Messages))
+			s.ID, s.Updated.Local().Format("2006-01-02 15:04"), len(s.Messages), firstUserText(s.Messages))
 		shown++
 	}
 	if shown == 0 {
@@ -415,14 +554,15 @@ func formatSessions(store session.Store, wd string) string {
 	return b.String()
 }
 
-// firstUserText returns a short snippet of the first user message.
-func firstUserText(msgs []apiclient.Message) string {
+// firstUserText returns a short snippet of the first user message in a stored
+// canonical session.
+func firstUserText(msgs []korai.SessionMessage) string {
 	for _, m := range msgs {
-		if m.Role != apiclient.RoleUser {
+		if m.Role != string(apiclient.RoleUser) {
 			continue
 		}
-		for _, blk := range m.Content {
-			if tb, ok := blk.(apiclient.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
+		for _, blk := range m.Blocks {
+			if tb, ok := blk.(korai.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
 				s := strings.TrimSpace(tb.Text)
 				if len(s) > 50 {
 					s = s[:50] + "…"
@@ -445,7 +585,7 @@ func aboutText() string {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore session.Store, snapLog *snapshot.Log, workers command.WorkerSelector) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore sdksession.Store, snapLog *snapshot.Log, workers command.WorkerSelector) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -467,6 +607,10 @@ func buildCommands(home, wd string, registry *tool.Registry, modelList []string,
 	reg.Register(command.NewResumeCommand(func() string { return formatSessions(sessStore, wd) }))
 	reg.Register(command.NewRevertCommand())
 	reg.Register(command.NewSnapshotsCommand(snapLog.Render))
+	// Cross-device login: /login authorizes this device via the browser (or a
+	// device code when headless); /logout revokes and forgets the token.
+	reg.Register(newLoginCommand(home))
+	reg.Register(newLogoutCommand(home))
 
 	// Bundled skills first, then discovered skills (which override by name).
 	if builtins, err := skill.Builtins(); err != nil {
