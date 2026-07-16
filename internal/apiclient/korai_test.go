@@ -192,7 +192,7 @@ func TestKoraiCompleteText(t *testing.T) {
 	got := drainEvents(t, ch)
 	want := []Event{
 		TextDeltaEvent{Text: "hello there"},
-		MessageCompleteEvent{StopReason: "stop", Usage: Usage{InputTokens: 12, OutputTokens: 3}},
+		MessageCompleteEvent{StopReason: "end_turn", Usage: Usage{InputTokens: 12, OutputTokens: 3}},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("events mismatch (-want +got):\n%s", diff)

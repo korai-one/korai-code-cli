@@ -12,6 +12,7 @@ var (
 	colCyan     = lipgloss.Color("#7DCFFF") // info / status accents
 	colMuted    = lipgloss.Color("#565F89") // dim metadata
 	colRed      = lipgloss.Color("#F7768E") // errors
+	colYellow   = lipgloss.Color("#E0AF68") // warnings (e.g. context nearing compaction)
 )
 
 // styles holds the lipgloss styles for transcript rendering. Kept in one place
@@ -29,6 +30,7 @@ type styles struct {
 	welcomeTitle lipgloss.Style
 	welcomeHint  lipgloss.Style
 	dialog       lipgloss.Style
+	ctxWarn      lipgloss.Style // context meter, 70–90% of the compaction threshold
 }
 
 func newStyles() styles {
@@ -48,5 +50,6 @@ func newStyles() styles {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colPurple).
 			Padding(0, 1),
+		ctxWarn: lipgloss.NewStyle().Foreground(colYellow),
 	}
 }

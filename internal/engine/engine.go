@@ -36,6 +36,7 @@ type Engine struct {
 	models     *apiclient.ModelSelector
 	usage      UsageRecorder
 	sysSuffix  func() string
+	filter     ToolResultFilter
 	compactFn  CompactFunc
 	compactMax int
 	estimate   func([]apiclient.Message) int
@@ -97,6 +98,14 @@ type CompactFunc func(ctx context.Context, messages []apiclient.Message) ([]apic
 // the apiclient type, never a backend-specific one.
 type UsageRecorder func(model string, usage apiclient.Usage)
 
+// ToolResultFilter transforms a tool's result content just before it is appended
+// to the model's history — the seam the tool-output condenser plugs into to save
+// tokens. It receives the tool name and the full result and returns the
+// (possibly reduced) content the model will see. The UI already received the
+// original result via ToolResultEvent, so a filter never hides output from the
+// user. A nil filter is a no-op.
+type ToolResultFilter func(toolName string, r tool.Result) string
+
 // Option customizes an Engine.
 type Option func(*Engine)
 
@@ -123,6 +132,13 @@ func WithUsageRecorder(r UsageRecorder) Option {
 // return adds nothing.
 func WithSystemSuffix(fn func() string) Option {
 	return func(e *Engine) { e.sysSuffix = fn }
+}
+
+// WithToolResultFilter attaches a filter applied to every tool result before it
+// is appended to the model's history. It does not affect the ToolResultEvent the
+// UI receives, so the user still sees the full output. A nil filter disables it.
+func WithToolResultFilter(f ToolResultFilter) Option {
+	return func(e *Engine) { e.filter = f }
 }
 
 // WithAutoCompact enables automatic compaction: before a turn, if the history's
@@ -198,7 +214,7 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 			e.usage(req.Model, turn.usage)
 		}
 		if len(turn.toolCalls) == 0 {
-			if turn.stopReason == "max_tokens" {
+			if turn.stopReason == apiclient.StopMaxTokens {
 				slog.Warn("response truncated: hit max output tokens")
 			}
 			// Record the final assistant text so the next turn has it in context.
@@ -209,6 +225,26 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 				})
 			}
 			return history, nil
+		}
+
+		// If the model stopped because it hit the output token limit, its tool
+		// calls may have silently truncated arguments — executing them would be a
+		// correctness bug. Fail them all without running, record the error
+		// results, and loop so the model sees the failure and can retry.
+		if turn.stopReason == apiclient.StopMaxTokens {
+			slog.Warn("response truncated: hit max output tokens")
+			assistantContent, results := e.failTruncatedCalls(turn.toolCalls, ch)
+			if turn.text != "" {
+				assistantContent = append(
+					[]apiclient.ContentBlock{apiclient.TextBlock{Text: turn.text}},
+					assistantContent...,
+				)
+			}
+			history = append(history,
+				apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
+				apiclient.Message{Role: apiclient.RoleUser, Content: results},
+			)
+			continue
 		}
 
 		// Execute all tool calls and collect results.
@@ -296,6 +332,31 @@ func (e *Engine) streamTurn(ctx context.Context, req apiclient.Request, ch chan<
 	return res, nil
 }
 
+// truncatedToolCallMessage is the error surfaced for each tool call the engine
+// refuses to run because the model's response was cut off at the output token
+// limit before its arguments were complete.
+const truncatedToolCallMessage = "tool call not executed: response truncated at the output token limit before arguments were complete; retry"
+
+// failTruncatedCalls records an error result for each tool call from a turn the
+// backend truncated at the output token limit, without executing any of them. It
+// emits a ToolResultEvent per call (reusing the blocked path) so the UI reflects
+// the failure, and mirrors executeTools' return shape so the caller appends
+// history identically. The synthetic errors bypass the tool-result filter.
+func (e *Engine) failTruncatedCalls(calls []apiclient.ToolCallCompleteEvent, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock) {
+	assistantBlocks := make([]apiclient.ContentBlock, 0, len(calls))
+	resultBlocks := make([]apiclient.ContentBlock, 0, len(calls))
+	for _, call := range calls {
+		assistantBlocks = append(assistantBlocks, apiclient.ToolCallBlock(call))
+		result := e.blocked(ch, call.Name, truncatedToolCallMessage)
+		resultBlocks = append(resultBlocks, apiclient.ToolResultBlock{
+			ToolCallID: call.ID,
+			Content:    result.Content,
+			IsError:    result.IsError,
+		})
+	}
+	return assistantBlocks, resultBlocks
+}
+
 // executeTools runs each tool call, gating on permissions, and returns the
 // assistant content block list and user-side tool result content blocks.
 func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCompleteEvent, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock, error) {
@@ -306,9 +367,15 @@ func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCom
 		assistantBlocks = append(assistantBlocks, apiclient.ToolCallBlock(call))
 
 		result := e.dispatchTool(ctx, call, ch)
+		// Condense the model-facing copy only; the UI already got the full
+		// output via the ToolResultEvent sent inside dispatchTool.
+		content := result.Content
+		if e.filter != nil {
+			content = e.filter(call.Name, result)
+		}
 		resultBlocks = append(resultBlocks, apiclient.ToolResultBlock{
 			ToolCallID: call.ID,
-			Content:    result.Content,
+			Content:    content,
 			IsError:    result.IsError,
 		})
 	}

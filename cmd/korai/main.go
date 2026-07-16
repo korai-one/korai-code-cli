@@ -64,22 +64,35 @@ type runOptions struct {
 	autoYes     bool
 	cont        bool
 	resumeID    string
+	// outputFormat selects the headless --print output encoding: "text" (the
+	// human-readable stream) or "json" (one engine event per line, JSONL).
+	outputFormat string
+	// local forces local-worker inference: the session must resolve a co-located
+	// or LAN worker (else startup fails), and no remote API key is required.
+	local bool
 	// localWorkerURL, when set, routes inference straight to a loopback Korai
 	// worker (bypassing the orchestrator). Empty means auto-detect an advertised
 	// worker, then fall back to the networked backend.
 	localWorkerURL string
+	// localWorkerAddr, when set, routes inference to a home/LAN inference server
+	// over the direct binary channel on TCP (host:port); the token comes from
+	// KORAI_LOCAL_WORKER_TOKEN.
+	localWorkerAddr string
 }
 
 func rootCmd() *cobra.Command {
 	var (
-		printMode   bool
-		model       string
-		debug       bool
-		permModeStr string
-		autoYes     bool
-		cont        bool
-		resumeID    string
-		localWorker string
+		printMode       bool
+		model           string
+		debug           bool
+		permModeStr     string
+		autoYes         bool
+		cont            bool
+		resumeID        string
+		outputFormat    string
+		local           bool
+		localWorker     string
+		localWorkerAddr string
 	)
 
 	root := &cobra.Command{
@@ -97,15 +110,21 @@ func rootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if verr := validateOutputFormat(outputFormat); verr != nil {
+				return verr
+			}
 			opts := runOptions{
-				model:          model,
-				modelSet:       cmd.Flags().Changed("model"),
-				permMode:       mode,
-				permModeSet:    cmd.Flags().Changed("permission-mode"),
-				autoYes:        autoYes,
-				cont:           cont,
-				resumeID:       resumeID,
-				localWorkerURL: localWorker,
+				model:           model,
+				modelSet:        cmd.Flags().Changed("model"),
+				permMode:        mode,
+				permModeSet:     cmd.Flags().Changed("permission-mode"),
+				autoYes:         autoYes,
+				cont:            cont,
+				resumeID:        resumeID,
+				outputFormat:    outputFormat,
+				local:           local,
+				localWorkerURL:  localWorker,
+				localWorkerAddr: localWorkerAddr,
 			}
 			if printMode {
 				prompt, perr := resolvePrompt(args)
@@ -142,12 +161,18 @@ func rootCmd() *cobra.Command {
 		"permission mode: default | plan | acceptEdits | bypassPermissions")
 	root.Flags().BoolVar(&autoYes, "yes", false,
 		"auto-approve prompts that would otherwise be denied in headless mode")
+	root.Flags().StringVar(&outputFormat, "output-format", outputFormatText,
+		"headless --print output format: text | json (json emits one engine event per line as JSONL)")
 	root.Flags().BoolVarP(&cont, "continue", "c", false,
 		"resume the most recent session in this directory")
 	root.Flags().StringVar(&resumeID, "resume", "",
 		"resume a saved session by id")
+	root.Flags().BoolVar(&local, "local", false,
+		"require a local/LAN worker for inference and run without any API key")
 	root.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
+	root.Flags().StringVar(&localWorkerAddr, "local-worker-addr", "",
+		"route inference to a home/LAN inference server over the direct binary channel (host:port; token via KORAI_LOCAL_WORKER_TOKEN)")
 
 	root.AddCommand(loginCmd())
 	root.AddCommand(logoutCmd())
@@ -182,6 +207,13 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	}
 	defer sess.close()
 
+	// Auth is gated at the prompt, not at startup: a keyless session can be
+	// assembled, but a remote turn needs a key. Fail before the turn with a clear
+	// message rather than mid-stream.
+	if gerr := sess.authGate(); gerr != nil {
+		return gerr
+	}
+
 	// Headless runs have no interactive prompt: an "ask" decision is denied by
 	// default (safe), or auto-approved when --yes is set.
 	var asker perm.Asker = perm.DenyAsker{}
@@ -193,6 +225,7 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithToolResultFilter(sess.condense),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 	// Continue from any resumed history, then add this prompt.
 	messages := make([]apiclient.Message, 0, len(sess.initialHistory)+1)
@@ -203,17 +236,38 @@ func runPrint(ctx context.Context, opts runOptions) error {
 
 	slog.Debug("starting headless turn", "permission_mode", sess.modes.Get().String())
 
+	// In json mode every engine event is emitted as one compact JSON object per
+	// line (JSONL) on stdout; the text-mode prints are suppressed so the stream
+	// stays machine-parseable.
+	jsonMode := opts.outputFormat == outputFormatJSON
+
 	var finalHistory []apiclient.Message
 	for evt := range eng.Run(ctx, messages, sess.system) {
+		if jsonMode {
+			line, encErr := encodeEvent(evt)
+			if encErr != nil {
+				return encErr
+			}
+			// os.Stdout is unbuffered, so each Write flushes the line immediately.
+			if _, werr := os.Stdout.Write(append(line, '\n')); werr != nil {
+				return werr
+			}
+		}
 		switch v := evt.(type) {
 		case engine.TextEvent:
-			fmt.Print(v.Text)
+			if !jsonMode {
+				fmt.Print(v.Text)
+			}
 		case engine.CompactedEvent:
-			fmt.Fprintf(os.Stderr, "[auto-compacted: %d → %d messages]\n", v.Before, v.After)
+			if !jsonMode {
+				fmt.Fprintf(os.Stderr, "[auto-compacted: %d → %d messages]\n", v.Before, v.After)
+			}
 		case engine.ToolStartEvent:
-			fmt.Fprintf(os.Stderr, "\n[tool: %s]\n", v.Name)
+			if !jsonMode {
+				fmt.Fprintf(os.Stderr, "\n[tool: %s]\n", v.Name)
+			}
 		case engine.ToolResultEvent:
-			if v.Result.IsError {
+			if !jsonMode && v.Result.IsError {
 				fmt.Fprintf(os.Stderr, "[tool error: %s]\n", v.Result.Content)
 			}
 		case engine.DoneEvent:
@@ -222,7 +276,9 @@ func runPrint(ctx context.Context, opts runOptions) error {
 			return v.Err
 		}
 	}
-	fmt.Println()
+	if !jsonMode {
+		fmt.Println()
+	}
 	if finalHistory != nil {
 		sess.saver(sess.sessionID, sess.sessionStart, finalHistory)
 	}
@@ -244,12 +300,13 @@ func runTUI(ctx context.Context, opts runOptions) error {
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithToolResultFilter(sess.condense),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 
 	model := tui.New(eng, asker, sess.system, sess.commands).
 		WithVersion(version).
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
-		WithModels(sess.models).WithCost(sess.cost).
+		WithModels(sess.models).WithCost(sess.cost).WithAuthGate(sess.authGate).
 		WithFileFinder(sess.fileFinder).WithMentionExpander(sess.mentionExpander).
 		WithImageAttacher(sess.imageAttacher).
 		WithSaver(sess.saver).WithResumeLoader(sess.resumeLoad).

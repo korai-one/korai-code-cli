@@ -8,12 +8,12 @@ type price struct {
 	outputPerM float64
 }
 
-// prices holds estimated per-model rates.
-//
-// TODO KORAI SDK: these are Anthropic list prices and are the only
-// backend-specific part of this package. When the Korai inference SDK is wired
-// in, pricing should come from it (or be removed if the network is free), while
-// the token accounting above stays unchanged.
+// prices holds estimated per-model rates for models the Korai network may route
+// to, keyed by the model name reported in usage. These are public list prices
+// used only for the cost estimate; the token accounting itself is
+// backend-agnostic. A model with no entry is still token-tracked, just without a
+// USD figure. Extend or replace as the routed model set changes (e.g. from a
+// generated registry).
 var prices = map[string]price{
 	"claude-opus-4-8":   {inputPerM: 15, outputPerM: 75},
 	"claude-sonnet-4-6": {inputPerM: 3, outputPerM: 15},

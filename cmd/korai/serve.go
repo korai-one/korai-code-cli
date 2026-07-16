@@ -41,14 +41,16 @@ const listenLinePrefix = "KORAI_KODE_LISTEN="
 
 // serveOptions holds the resolved flags for `korai serve`.
 type serveOptions struct {
-	port           int
-	host           string
-	dir            string
-	autoYes        bool
-	resume         bool
-	localWorker    string
-	authToken      string
-	allowedOrigins []string
+	port            int
+	host            string
+	dir             string
+	autoYes         bool
+	resume          bool
+	local           bool
+	localWorker     string
+	localWorkerAddr string
+	authToken       string
+	allowedOrigins  []string
 }
 
 // defaultOriginPatterns is the base allow-list for the WebSocket Origin header.
@@ -69,15 +71,17 @@ var defaultOriginPatterns = []string{
 // the same Go engine the CLI uses, with no client-side reimplementation.
 func serveCmd() *cobra.Command {
 	var (
-		port           int
-		host           string
-		dir            string
-		autoYes        bool
-		resume         bool
-		debug          bool
-		localWorker    string
-		authToken      string
-		allowedOrigins []string
+		port            int
+		host            string
+		dir             string
+		autoYes         bool
+		resume          bool
+		debug           bool
+		local           bool
+		localWorker     string
+		localWorkerAddr string
+		authToken       string
+		allowedOrigins  []string
 	)
 	cmd := &cobra.Command{
 		Use:           "serve",
@@ -90,7 +94,8 @@ func serveCmd() *cobra.Command {
 			setupLogging(debug, os.Stderr)
 			return runServe(cmd.Context(), serveOptions{
 				port: port, host: host, dir: dir, autoYes: autoYes, resume: resume,
-				localWorker: localWorker, authToken: authToken, allowedOrigins: allowedOrigins,
+				local: local, localWorker: localWorker, localWorkerAddr: localWorkerAddr,
+				authToken: authToken, allowedOrigins: allowedOrigins,
 			})
 		},
 	}
@@ -98,12 +103,16 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1",
 		"bind address; use 0.0.0.0 inside an isolated sandbox so an exposed port is reachable")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the session (default: current directory)")
+	cmd.Flags().BoolVar(&local, "local", false,
+		"require a local/LAN worker for inference and run without any API key")
 	cmd.Flags().BoolVar(&autoYes, "yes", false, "auto-approve every tool call instead of asking the client")
 	cmd.Flags().BoolVar(&resume, "resume", false,
 		"resume the most recent saved session for --dir (used to continue an expired sandbox)")
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging to stderr")
 	cmd.Flags().StringVar(&localWorker, "local-worker-url", "",
 		"route inference to a local Korai worker at this URL (default: auto-detect, else use the network)")
+	cmd.Flags().StringVar(&localWorkerAddr, "local-worker-addr", "",
+		"route inference to a home/LAN inference server over the direct binary channel (host:port; token via KORAI_LOCAL_WORKER_TOKEN)")
 	cmd.Flags().StringVar(&authToken, "auth-token", "",
 		"require this token as the ?token= query parameter on the WebSocket upgrade (gates browser→sandbox connections)")
 	cmd.Flags().StringArrayVar(&allowedOrigins, "allowed-origin", nil,
@@ -132,7 +141,13 @@ func runServe(ctx context.Context, opts serveOptions) error {
 	// The session store persists per turn (see worker's saver call) and lives on
 	// the sandbox filesystem, which the Vercel snapshot captures, so restoring a
 	// snapshot and starting with --resume continues the prior conversation.
-	sess, err := assemble(ctx, runOptions{autoYes: opts.autoYes, cont: opts.resume, localWorkerURL: opts.localWorker}, headlessPlanApprover{autoYes: opts.autoYes})
+	sess, err := assemble(ctx, runOptions{
+		autoYes:         opts.autoYes,
+		cont:            opts.resume,
+		local:           opts.local,
+		localWorkerURL:  opts.localWorker,
+		localWorkerAddr: opts.localWorkerAddr,
+	}, headlessPlanApprover{autoYes: opts.autoYes})
 	if err != nil {
 		return err
 	}
@@ -252,6 +267,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	eng := engine.New(s.sess.client, s.sess.registry, permEngine, s.sess.deps,
 		engine.WithHooks(s.sess.hooks), engine.WithModelSelector(s.sess.models),
 		engine.WithUsageRecorder(s.sess.cost.Add), engine.WithSystemSuffix(planSuffix(s.sess.modes)),
+		engine.WithToolResultFilter(s.sess.condense),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, s.sess.compactor))
 
 	// cancelTurn cancels the in-flight turn for abort; guarded because the read

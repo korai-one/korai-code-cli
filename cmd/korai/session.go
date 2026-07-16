@@ -19,6 +19,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
 	"github.com/Nevaero/korai-code-cli/internal/compact"
+	"github.com/Nevaero/korai-code-cli/internal/condense"
 	"github.com/Nevaero/korai-code-cli/internal/config"
 	appctx "github.com/Nevaero/korai-code-cli/internal/context"
 	"github.com/Nevaero/korai-code-cli/internal/cost"
@@ -57,10 +58,17 @@ type assembled struct {
 	cost      *cost.Tracker
 	compactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
 	hooks     engine.HookFunc
+	condense  engine.ToolResultFilter
 	rules     perm.Rules
 	system    string
 	deps      tool.Deps
 	closers   []func() error
+
+	// authGate reports whether the session may run a turn: nil when the active
+	// backend is ready, or an actionable error when a remote turn needs an API
+	// key that is not set. Consulted before the first prompt, not at startup, so
+	// the CLI can launch without a key (see --local for a key-free local run).
+	authGate func() error
 
 	fileFinder      func() []string
 	mentionExpander func(string) string
@@ -118,6 +126,20 @@ func webBaseURL() string {
 	return defaultKoraiWebURL
 }
 
+// newKoraiClient constructs the networked Korai backend client. The credential
+// is the login token in ~/.korai/auth.json (auto-refreshed) when present, else
+// KORAI_API_KEY; it returns an error only when neither is available, so a
+// keyless session can still assemble on a local worker (the error is deferred to
+// the first remote turn via authGate). See resolveBearer.
+func newKoraiClient(ctx context.Context, home, model string) (apiclient.Client, error) {
+	baseURL := orchestratorBaseURL()
+	bearer, err := resolveBearer(ctx, home, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.NewKoraiClient(bearer, baseURL, model), nil
+}
+
 // close releases session resources (e.g. MCP server connections).
 func (a *assembled) close() {
 	for _, c := range a.closers {
@@ -148,10 +170,27 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	if localOverride == "" {
 		localOverride = os.Getenv("KORAI_LOCAL_WORKER_URL")
 	}
-	localURL, useLocal := localworker.Resolve(ctx, localOverride, nil)
+	// A dedicated home/LAN inference server is reached over the direct binary
+	// channel on TCP: an explicit address (flag or env) plus an optional token.
+	lanAddr := opts.localWorkerAddr
+	if lanAddr == "" {
+		lanAddr = os.Getenv("KORAI_LOCAL_WORKER_ADDR")
+	}
+	lanToken := os.Getenv("KORAI_LOCAL_WORKER_TOKEN")
+	endpoint, useLocal := localworker.Resolve(ctx, localOverride, lanAddr, lanToken, nil)
+
+	// --local demands a local worker and never touches a remote key: if none
+	// resolves, fail fast with guidance rather than silently going keyless-remote.
+	if opts.local && !useLocal {
+		return nil, fmt.Errorf("--local: no local worker found (start one, or set --local-worker-url / --local-worker-addr, or KORAI_LOCAL_WORKER_URL / KORAI_LOCAL_WORKER_ADDR)")
+	}
 
 	if useLocal {
-		slog.Info("using local worker", "url", localURL)
+		if endpoint.IsDirect() {
+			slog.Info("using local worker", "network", endpoint.Network, "address", endpoint.Address)
+		} else {
+			slog.Info("using local worker", "url", endpoint.URL)
+		}
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -159,7 +198,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 	home, _ := os.UserHomeDir() // empty home just means no user-level settings
 
-	settings, err := config.DefaultPaths(home, wd).Load()
+	settings, err := config.DefaultPaths(home, wd).LoadContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading settings: %w", err)
 	}
@@ -185,18 +224,45 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	lspEnabled := settings.LSP == nil || *settings.LSP
 	lspMgr := lsp.New(lspEnabled)
 	deps := tool.Deps{WorkDir: wd, LSP: lspMgr}
-	// The local worker needs no credential; the networked backend uses the login
-	// token (~/.korai/auth.json, auto-refreshed) when present, else KORAI_API_KEY.
-	var client apiclient.Client
+	// Build whichever backends are available and expose both through a
+	// ClientSelector so /worker_mode can switch between them at runtime. The local
+	// worker needs no credential; the networked backend uses the login token
+	// (~/.korai/auth.json, auto-refreshed) when present, else KORAI_API_KEY.
+	var localClient apiclient.Client
 	if useLocal {
-		client = apiclient.NewKoraiClient("", localURL, model)
-	} else {
-		baseURL := orchestratorBaseURL()
-		bearer, berr := resolveBearer(ctx, home, baseURL)
-		if berr != nil {
-			return nil, berr
+		switch {
+		case endpoint.IsDirect() && endpoint.Network == "tcp":
+			// Direct binary channel to a home/LAN inference server (hop 1 over TCP).
+			localClient = apiclient.NewLocalWorkerClientTCP(endpoint.Address, endpoint.Token, model)
+		case endpoint.IsDirect():
+			// Direct binary channel to a co-located worker (hop 1 over a unix socket).
+			localClient = apiclient.NewLocalWorkerClient(endpoint.Address, model)
+		default:
+			// Co-located worker exposing only the loopback OpenAI-HTTP endpoint.
+			localClient = apiclient.NewKoraiClient("", endpoint.URL, model)
 		}
-		client = apiclient.NewKoraiClient(bearer, baseURL, model)
+	}
+	// The networked backend is resolved best-effort so /worker_mode can switch to
+	// it even when the session starts on a local worker. A missing credential is
+	// not fatal here: a keyless local session still assembles, and the auth check
+	// is deferred to the first remote turn (see authGate). The bearer is the login
+	// token when present, else KORAI_API_KEY (see newKoraiClient / resolveBearer).
+	remoteClient, remoteErr := newKoraiClient(ctx, home, model)
+	activeMode := apiclient.WorkerRemote
+	if useLocal {
+		activeMode = apiclient.WorkerLocal
+	}
+	clientSelector := apiclient.NewClientSelector(activeMode, localClient, remoteClient)
+	var client apiclient.Client = clientSelector
+
+	// authGate defers the credential requirement to the first prompt: a session on
+	// a local worker (or one that later switches to it) needs none, but a remote
+	// turn does. It re-reads the active mode each call so /worker_mode is honored.
+	authGate := func() error {
+		if clientSelector.Mode() == string(apiclient.WorkerRemote) && remoteClient == nil {
+			return remoteErr
+		}
+		return nil
 	}
 	models := apiclient.NewModelSelector(model)
 	modes := perm.NewModeSelector(mode)
@@ -294,16 +360,18 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	return &assembled{
 		client:    client,
 		registry:  registry,
-		commands:  buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog),
+		commands:  buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog, clientSelector),
 		models:    models,
 		modes:     modes,
 		cost:      costTracker,
 		compactor: compactor,
 		hooks:     buildHooks(settings.Hooks),
+		condense:  buildCondenser(settings.Condense),
 		rules:     rules,
 		system:    system,
 		deps:      deps,
 		closers:   closers,
+		authGate:  authGate,
 
 		fileFinder:      workspaceFiles(wd),
 		mentionExpander: mentionExpander(wd),
@@ -517,7 +585,7 @@ func aboutText() string {
 // buildCommands assembles the slash-command registry: built-ins, /model, /cost,
 // /compact, the bundled skills, and skills discovered from the project and user
 // skill directories (which override bundled ones of the same name).
-func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore sdksession.Store, snapLog *snapshot.Log) *command.Registry {
+func buildCommands(home, wd string, registry *tool.Registry, modelList []string, models *apiclient.ModelSelector, modes *perm.ModeSelector, costTracker *cost.Tracker, sessStore sdksession.Store, snapLog *snapshot.Log, workers command.WorkerSelector) *command.Registry {
 	reg := command.NewRegistry()
 	command.RegisterBuiltins(reg, func() []string {
 		tools := registry.All()
@@ -529,6 +597,7 @@ func buildCommands(home, wd string, registry *tool.Registry, modelList []string,
 	})
 	reg.Register(command.NewAboutCommand(aboutText()))
 	reg.Register(command.NewModelCommand(modelList, models))
+	reg.Register(command.NewWorkerCommand(workers))
 	reg.Register(command.NewCostCommand(costTracker.Summary))
 	reg.Register(command.NewCompactCommand())
 	reg.Register(command.NewPlanCommand(
@@ -575,6 +644,27 @@ func buildHooks(specs map[string][]config.HookSpec) engine.HookFunc {
 		}
 	}
 	return hook.New(converted).Fire
+}
+
+// buildCondenser turns the condense settings into an engine tool-result filter.
+// Condensing is on by default (nil settings): it only shrinks verbose output
+// from targeted tools and never hides anything from the terminal. It returns nil
+// only when explicitly disabled, so the engine then skips filtering entirely.
+func buildCondenser(cs *config.CondenseSettings) engine.ToolResultFilter {
+	if cs != nil && cs.Enabled != nil && !*cs.Enabled {
+		return nil
+	}
+	cfg := condense.Config{}
+	if cs != nil {
+		cfg.Tools = cs.Tools
+		cfg.MaxLines = cs.MaxLines
+		cfg.HeadLines = cs.HeadLines
+		cfg.TailLines = cs.TailLines
+	}
+	f := condense.New(cfg)
+	return func(toolName string, r tool.Result) string {
+		return f.Apply(toolName, r.Content)
+	}
 }
 
 // connectMCPServers connects to each configured MCP server and registers its

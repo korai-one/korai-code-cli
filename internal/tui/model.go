@@ -9,6 +9,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
 	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/Nevaero/korai-code-cli/internal/compact"
 	"github.com/Nevaero/korai-code-cli/internal/cost"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
@@ -69,6 +71,12 @@ type Model struct {
 	entries   []entry
 	streaming bool // an assistant entry is currently being appended to
 
+	// contextTokens caches the estimated token size of history, refreshed
+	// whenever history changes. Drives the context-usage meter in the status
+	// line (how close the session is to an auto-compact). Zero on an empty
+	// session, which hides the meter.
+	contextTokens int
+
 	input    textinput.Model
 	spinner  spinner.Model
 	viewport viewport.Model
@@ -103,6 +111,10 @@ type Model struct {
 	models       *apiclient.ModelSelector
 	cost         *cost.Tracker
 	planApprover *PlanApprover
+	// authGate reports whether a turn may run: nil when the active backend is
+	// ready, or an error (shown to the user) when a remote turn needs an API key
+	// that is not set. Consulted before each turn; nil means always allowed.
+	authGate func() error
 
 	// sessionAllowed records tool names the user chose to allow for the rest of
 	// the session ("[a]lways" in the permission dialog), so repeat calls skip the
@@ -225,6 +237,14 @@ func (m Model) WithCost(t *cost.Tracker) Model {
 	return m
 }
 
+// WithAuthGate wires a check consulted before each turn: when it returns an
+// error the turn is refused and the error is shown, so a keyless session can
+// launch but a remote prompt asks for a key. Call before tea.NewProgram.
+func (m Model) WithAuthGate(gate func() error) Model {
+	m.authGate = gate
+	return m
+}
+
 // Compactor summarizes the conversation history, returning a shorter history.
 type Compactor func(ctx context.Context, history []apiclient.Message) ([]apiclient.Message, error)
 
@@ -293,8 +313,16 @@ func (m Model) WithSession(id string, created time.Time, history []apiclient.Mes
 	m.sessionID = id
 	m.sessionStart = created
 	m.history = history
+	m.recomputeContext()
 	m.entries = entriesFromMessages(history)
 	return m
+}
+
+// recomputeContext refreshes the cached context-size estimate from the current
+// history so the status-line meter reflects how close the session is to an
+// auto-compact. Call after any change to m.history.
+func (m *Model) recomputeContext() {
+	m.contextTokens = compact.EstimateTokens(m.history)
 }
 
 // Init starts the input cursor blink and begins listening for permission and
@@ -364,6 +392,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addEntry(kindError, "compaction failed: "+msg.err.Error())
 		} else {
 			m.history = msg.history
+			m.recomputeContext()
 			m.addEntry(kindInfo, fmt.Sprintf("compacted; %d messages retained", len(msg.history)))
 		}
 		return m, nil
@@ -390,6 +419,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionID = msg.id
 		m.sessionStart = msg.created
 		m.history = msg.messages
+		m.recomputeContext()
 		m.entries = entriesFromMessages(msg.messages)
 		m.addEntry(kindInfo, fmt.Sprintf("resumed session %s (%d messages)", msg.id, len(msg.messages)))
 		m.refreshViewport()
@@ -535,6 +565,17 @@ func (m *Model) relayout() {
 
 func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
+		// During the agent's turn, ctrl+c interrupts the turn instead of quitting:
+		// the user reclaims control and is asked what to do next. Quitting is
+		// reserved for the idle prompt (press it again once the turn has stopped).
+		if m.busy {
+			if m.cancel != nil {
+				m.cancel()
+			}
+			m.addEntry(kindInfo, "What should Korai do?")
+			m.refreshViewport()
+			return m, nil
+		}
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -967,6 +1008,7 @@ func (m Model) dispatchCommand(name, args, raw string) (tea.Model, tea.Cmd) {
 	case command.Clear:
 		m.entries = nil
 		m.history = nil
+		m.recomputeContext()
 		m.refreshViewport()
 		return m, nil
 	case command.Quit:
@@ -1122,6 +1164,17 @@ func (m Model) startTurn(promptText string) (tea.Model, tea.Cmd) {
 // text; the message sent to the model has any @-referenced files inlined by
 // mentionExpander.
 func (m Model) runTurn(promptText string) (tea.Model, tea.Cmd) {
+	// Auth is gated here, not at startup: a keyless session launches, but a remote
+	// turn needs a key. Refuse the turn with the gate's guidance (e.g. set a key
+	// or /worker_mode to a local worker) instead of failing mid-stream.
+	if m.authGate != nil {
+		if err := m.authGate(); err != nil {
+			m.addEntry(kindError, err.Error())
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
 	sendText := promptText
 	if m.mentionExpander != nil {
 		sendText = m.mentionExpander(promptText)
@@ -1189,14 +1242,21 @@ func (m Model) onEngineEvent(msg engineEventMsg) (tea.Model, tea.Cmd) {
 		m.addEntry(kindInfo, fmt.Sprintf("auto-compacted context: %d → %d messages", ev.Before, ev.After))
 	case engine.DoneEvent:
 		m.history = ev.Messages
+		m.recomputeContext()
 		m.busy = false
 		m.streaming = false
+		m.input.Placeholder = "Ask Korai…" // the turn is over; steering no longer applies
 		m.refreshViewport()
 		return m, m.saveCmd()
 	case engine.ErrorEvent:
-		m.addEntry(kindError, ev.Err.Error())
+		// A cancelled turn is a user interrupt (ctrl+c / esc), already acknowledged
+		// in the transcript — don't also surface it as a red error.
+		if !errors.Is(ev.Err, context.Canceled) {
+			m.addEntry(kindError, ev.Err.Error())
+		}
 		m.busy = false
 		m.streaming = false
+		m.input.Placeholder = "Ask Korai…" // the turn is over; steering no longer applies
 		m.refreshViewport()
 		return m, nil
 	}
@@ -1507,7 +1567,9 @@ func (m Model) renderSearch() string {
 	return box + meta
 }
 
-// statusLine renders the bottom status: active model and token usage so far.
+// statusLine renders the bottom status: active model, token usage so far, and a
+// context-usage meter. The meter carries its own threshold color, so it is
+// appended after the muted base segment rather than folded into it.
 func (m Model) statusLine() string {
 	var parts []string
 	if m.models != nil {
@@ -1518,10 +1580,39 @@ func (m Model) statusLine() string {
 			parts = append(parts, fmt.Sprintf("↑%s ↓%s tok", humanCount(in), humanCount(out)))
 		}
 	}
-	if len(parts) == 0 {
+	ctx := m.contextSegment()
+	if len(parts) == 0 && ctx == "" {
 		return ""
 	}
-	return m.styles.status.Render(strings.Join(parts, " · "))
+	line := m.styles.status.Render(strings.Join(parts, " · "))
+	if ctx != "" {
+		if line != "" {
+			line += m.styles.status.Render(" · ")
+		}
+		line += ctx
+	}
+	return line
+}
+
+// contextSegment renders the context-usage meter ("ctx 42%"): the estimated
+// history size as a percentage of the auto-compaction threshold, colored to
+// warn as a compact approaches (muted under 70%, warning 70–90%, error above
+// 90%). It returns "" when the session has no history yet, so an empty session
+// shows no meter.
+func (m Model) contextSegment() string {
+	if m.contextTokens <= 0 {
+		return ""
+	}
+	pct := m.contextTokens * 100 / compact.DefaultThreshold
+	text := fmt.Sprintf("ctx %d%%", pct)
+	switch {
+	case pct > 90:
+		return m.styles.errorText.Render(text)
+	case pct >= 70:
+		return m.styles.ctxWarn.Render(text)
+	default:
+		return m.styles.status.Render(text)
+	}
 }
 
 // humanCount formats a token count compactly (1.2k, 3.4M).

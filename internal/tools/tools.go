@@ -16,11 +16,16 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/tools/readfile"
 	"github.com/Nevaero/korai-code-cli/internal/tools/repomap"
 	"github.com/Nevaero/korai-code-cli/internal/tools/webfetch"
-	"github.com/Nevaero/korai-code-cli/internal/tools/websearch"
 	"github.com/Nevaero/korai-code-cli/internal/tools/write"
 )
 
 // RegisterAll registers every built-in tool into r.
+//
+// WebSearch is intentionally NOT registered: it has no provider wired
+// (WithSearcher is only used in tests), so it would always return "web search is
+// not available" while still being advertised to the model, wasting turns. The
+// package stays in the tree so it can be registered here the moment a search
+// backend is configured.
 func RegisterAll(r *tool.Registry) {
 	r.Register(readfile.New())
 	r.Register(write.New())
@@ -31,5 +36,4 @@ func RegisterAll(r *tool.Registry) {
 	r.Register(glob.New())
 	r.Register(repomap.New())
 	r.Register(webfetch.New())
-	r.Register(websearch.New())
 }

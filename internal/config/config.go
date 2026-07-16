@@ -5,6 +5,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,11 +27,32 @@ type Settings struct {
 	// (lint, tests, build). Each runs in the working directory; a non-zero exit
 	// is reported as a failed check. Empty means no checks are configured.
 	Checks []string `json:"checks,omitempty"`
+	// Condense controls reduction of verbose tool output (dedup, truncation)
+	// before it enters the model's context, saving tokens. The full output still
+	// reaches the terminal. nil enables it with defaults; set enabled=false to
+	// turn it off.
+	Condense *CondenseSettings `json:"condense,omitempty"`
 	// Sync is the optional cross-device history-sync block. Absent (nil) means
 	// sync is off, which is the default; env vars (KORAI_SYNC_*) can still
 	// enable it. The content key is never read from here — only from
 	// KORAI_SYNC_KEY or ~/.korai/sync.key. See internal/synchub.
 	Sync *SyncSettings `json:"sync,omitempty"`
+}
+
+// CondenseSettings configures tool-output condensing (see Settings.Condense).
+// Zero-valued numeric fields fall back to the condense package defaults.
+type CondenseSettings struct {
+	// Enabled turns condensing on or off. nil is treated as true.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Tools lists the tool names whose output is condensed. Empty means the
+	// built-in default (Bash only).
+	Tools []string `json:"tools,omitempty"`
+	// MaxLines is the line count above which output is head/tail-truncated.
+	MaxLines int `json:"maxLines,omitempty"`
+	// HeadLines and TailLines are how many lines to keep at each end when
+	// truncating.
+	HeadLines int `json:"headLines,omitempty"`
+	TailLines int `json:"tailLines,omitempty"`
 }
 
 // SyncSettings is the settings-file form of the opt-in history-sync
@@ -91,6 +113,10 @@ func Defaults() Settings {
 //     first followed by override entries (no de-duplication).
 //   - MCPServers: merged by key; on a key collision the override entry wins.
 //     The result is always a non-nil map.
+//   - LSP (*bool): override wins when it sets the field (non-nil); otherwise the
+//     base value is kept, so a nil override does not clobber a base toggle.
+//   - Checks: override wins when it is non-empty (replace, not union), so a
+//     later layer can redefine the verification command set.
 func Merge(base, override Settings) Settings {
 	merged := base
 
@@ -99,6 +125,12 @@ func Merge(base, override Settings) Settings {
 	}
 	if override.PermissionMode != "" {
 		merged.PermissionMode = override.PermissionMode
+	}
+	if override.LSP != nil {
+		merged.LSP = override.LSP
+	}
+	if len(override.Checks) > 0 {
+		merged.Checks = override.Checks
 	}
 
 	merged.Permissions = Permissions{
@@ -116,6 +148,12 @@ func Merge(base, override Settings) Settings {
 	merged.MCPServers = servers
 
 	merged.Hooks = mergeHooks(base.Hooks, override.Hooks)
+
+	// Condense is replaced wholesale when the override sets it, so a later layer
+	// can flip it on or off without inheriting the earlier layer's tuning.
+	if override.Condense != nil {
+		merged.Condense = override.Condense
+	}
 
 	if override.Sync != nil {
 		merged.Sync = override.Sync
@@ -172,11 +210,24 @@ func DefaultPaths(home, cwd string) Loader {
 	}
 }
 
-// Load resolves the settings hierarchy, starting from Defaults and merging the
-// user, project, and local files in that order of increasing precedence. A
-// missing file is skipped silently; a file that exists but cannot be parsed is
-// an error wrapped with %w and the offending path.
+// Load resolves the settings hierarchy without a caller context; it is
+// equivalent to LoadContext(context.Background()). See LoadContext for the merge
+// semantics and the value-field expansion applied to the result.
 func (l Loader) Load() (Settings, error) {
+	return l.LoadContext(context.Background())
+}
+
+// LoadContext resolves the settings hierarchy, starting from Defaults and
+// merging the user, project, and local files in that order of increasing
+// precedence, then expands shell-style references (${VAR}, $VAR, $(command)) in
+// the merged result's value fields. A missing file is skipped silently; a file
+// that exists but cannot be parsed is an error wrapped with %w and the offending
+// path. ctx bounds and cancels any command substitution spawned during
+// expansion. Only the value fields where substitution is meaningful and safe are
+// expanded — Model and each MCPServers[*].Env value; see resolveSettings and
+// ResolveValue for the exact scope and token syntax. A command substitution that
+// fails to run is returned as an error.
+func (l Loader) LoadContext(ctx context.Context) (Settings, error) {
 	resolved := Defaults()
 	for _, path := range []string{l.UserPath, l.ProjectPath, l.LocalPath} {
 		s, ok, err := readFile(path)
@@ -188,7 +239,7 @@ func (l Loader) Load() (Settings, error) {
 		}
 		resolved = Merge(resolved, s)
 	}
-	return resolved, nil
+	return resolveSettings(ctx, resolved)
 }
 
 // readFile reads and parses a single settings file. It reports ok=false (with a

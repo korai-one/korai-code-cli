@@ -52,7 +52,7 @@ korai-code-cli/
 │   │   ├── edit/
 │   │   └── ...
 │   ├── perm/               # permission engine (allow/ask/deny modes)
-│   ├── apiclient/          # Anthropic SDK wrapper
+│   ├── apiclient/          # inference boundary (Korai SDK + local/LAN workers)
 │   ├── mcp/                # MCP client
 │   ├── config/             # settings hierarchy + state
 │   ├── tui/                # Bubble Tea UI
@@ -159,35 +159,30 @@ not work around it locally.
 6. **Permissions and config are values, not globals** (see §3). The permission
    decision (`allow`/`ask`/`deny`) and mode (`default`/`plan`/`acceptEdits`/
    `bypassPermissions`) live in `internal/perm` and are passed to the engine.
-7. **The Anthropic SDK is `anthropic-sdk-go` (official).** All API access goes
-   through `internal/apiclient`; no package calls the SDK directly.
-8. **`// TODO KORAI SDK` annotation.** Every call site inside `internal/apiclient`
-   that directly invokes an `anthropic-sdk-go` method (e.g. `client.Messages.New`,
-   `stream.Next`, `stream.Event`) must have a `// TODO KORAI SDK` comment on the
-   same line or the line immediately above. These mark the exact swap points when
-   the Korai P2P inference SDK replaces the Anthropic SDK. Missing annotations are
-   a merge block.
-9. **`internal/apiclient` owns its own types — no SDK types cross the boundary.**
-   `anthropic.*` types (messages, content blocks, tool use, events, etc.) must
-   never appear in the signature of any symbol exported from `internal/apiclient`.
-   Define equivalent types in `internal/apiclient` (e.g. `apiclient.Request`,
-   `apiclient.Event`, `apiclient.ToolCall`) and convert at the boundary inside the
-   package. This is the anti-corruption layer that lets the SDK be swapped without
-   touching `engine`, `tool`, or any other package.
-10. **`apiclient` exposes a `Client` interface, not a concrete struct.** The
-    interface is the only thing `engine` depends on:
-    ```go
-    // Client is the inference boundary. engine calls this; nothing below it
-    // knows which network backend is in use.
-    type Client interface {
-        Complete(ctx context.Context, req Request) (<-chan Event, error)
-    }
-    ```
-    `AnthropicClient` implements `Client` today using `anthropic-sdk-go` (all call
-    sites annotated `// TODO KORAI SDK`). `KoraiClient` will implement the same
-    interface against the Korai P2P SDK. A `StranglerClient` can wrap both and
-    route via a config flag during the transition. `engine` is wired to `Client` at
-    construction time and never sees the concrete type.
+7. **The inference SDK is `korai-sdk-go`.** All model access goes through
+   `internal/apiclient`; no package calls the SDK directly. There is no
+   third-party API backend — Korai runs on the Korai SDK, nothing else.
+8. **`internal/apiclient` owns its own types — no SDK types cross the boundary.**
+   `korai-sdk-go` (or any future backend SDK) types must never appear in the
+   signature of any symbol exported from `internal/apiclient`. Define equivalent
+   types in `internal/apiclient` (e.g. `apiclient.Request`, `apiclient.Event`,
+   `apiclient.ToolCall`) and convert at the boundary inside the package. This is
+   the anti-corruption layer that keeps the backend swappable without touching
+   `engine`, `tool`, or any other package.
+9. **`apiclient` exposes a `Client` interface, not a concrete struct.** The
+   interface is the only thing `engine` depends on:
+   ```go
+   // Client is the inference boundary. engine calls this; nothing below it
+   // knows which network backend is in use.
+   type Client interface {
+       Complete(ctx context.Context, req Request) (<-chan Event, error)
+   }
+   ```
+   `KoraiClient` implements `Client` against the Korai P2P SDK; `LocalWorkerClient`
+   implements it against a co-located or LAN worker. A `ClientSelector` wraps the
+   available backends so the active one is switchable at runtime (`/worker_mode`).
+   `engine` is wired to `Client` at construction time and never sees the concrete
+   type.
 
 ---
 
@@ -316,7 +311,7 @@ A commit that breaks any step is reverted, no discussion.
   sessions are explicitly in scope), the auto-updater, inline image rendering.
 - **Deferred services (Phase 5):**
   - **OAuth login** — authentication belongs to the Korai inference SDK behind
-    the `apiclient.Client` boundary (the strangler-fig seam, §4 items 8–10). A
+    the `apiclient.Client` boundary (the strangler-fig seam, §4 items 8–9). A
     provider-specific OAuth flow is not built until that backend is chosen.
   - **LSP** — per-language diagnostics are a large side-quest off the MVP path;
     defer until requested. When built, it follows the MCP pattern: a client in
@@ -364,8 +359,7 @@ A unit (tool/service/screen) is done when **all** are true:
 - TUI: `github.com/charmbracelet/bubbletea`, `.../lipgloss`, `.../bubbles`,
   `.../glamour` (markdown→ANSI rendering of assistant text),
   `github.com/76creates/stickers`; TUI tests `.../x/exp/teatest`
-- LLM: `github.com/anthropics/anthropic-sdk-go`,
-  `github.com/korai-one/korai-sdk-go` (the Korai P2P inference backend)
+- LLM: `github.com/korai-one/korai-sdk-go` (the Korai P2P inference backend)
 - MCP: `github.com/modelcontextprotocol/go-sdk`
 - Schema: `github.com/invopop/jsonschema`
 - Config: `github.com/joho/godotenv` (loads `.env` for local development)

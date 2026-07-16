@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/invopop/jsonschema"
 
 	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/Nevaero/korai-code-cli/internal/condense"
 	"github.com/Nevaero/korai-code-cli/internal/engine"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/tool"
@@ -216,6 +218,198 @@ func TestAutoCompactFires(t *testing.T) {
 	}
 	if compacted == nil || compacted.Before != 3 || compacted.After != 1 {
 		t.Errorf("CompactedEvent = %+v, want before=3 after=1", compacted)
+	}
+}
+
+// fixedOutputTool is a mock tool returning a fixed, verbose output so the
+// tool-result filter has something to condense.
+type fixedOutputTool struct {
+	name    string
+	content string
+}
+
+func (f fixedOutputTool) Name() string                       { return f.name }
+func (f fixedOutputTool) Description(context.Context) string { return "returns fixed output" }
+func (f fixedOutputTool) InputSchema() *jsonschema.Schema    { return tool.Schema[struct{}]() }
+func (f fixedOutputTool) ReadOnly() bool                     { return true }
+func (f fixedOutputTool) ConcurrencySafe() bool              { return true }
+func (f fixedOutputTool) CheckPermission(context.Context, json.RawMessage, perm.Mode) perm.Decision {
+	return perm.DecisionAllow
+}
+func (f fixedOutputTool) Execute(context.Context, json.RawMessage, tool.Deps) (tool.Result, error) {
+	return tool.Result{Content: f.content}, nil
+}
+
+// TestToolResultFilterCondensesHistoryNotUI verifies the load-bearing property
+// of the condenser seam: the model's history copy of a tool result is condensed
+// (saving tokens) while the UI's ToolResultEvent keeps the full output.
+func TestToolResultFilterCondensesHistoryNotUI(t *testing.T) {
+	t.Parallel()
+
+	// 300 identical lines: the default dedup collapses them to one counted line.
+	big := strings.Repeat("spam\n", 300)
+
+	client := &mockClient{turns: [][]apiclient.Event{
+		{
+			apiclient.ToolCallCompleteEvent{ID: "c1", Name: "Bash", Input: json.RawMessage(`{}`)},
+			apiclient.MessageCompleteEvent{StopReason: "tool_use"},
+		},
+		{
+			apiclient.TextDeltaEvent{Text: "done"},
+			apiclient.MessageCompleteEvent{StopReason: "end_turn"},
+		},
+	}}
+
+	registry := tool.NewRegistry()
+	registry.Register(fixedOutputTool{name: "Bash", content: big})
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
+
+	filter := func(name string, r tool.Result) string {
+		return condense.New(condense.Config{}).Apply(name, r.Content)
+	}
+	eng := engine.New(client, registry, permEngine, tool.Deps{}, engine.WithToolResultFilter(filter))
+
+	var uiResult engine.ToolResultEvent
+	var history []apiclient.Message
+	for evt := range eng.Run(context.Background(), []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "run"}}},
+	}, "") {
+		switch v := evt.(type) {
+		case engine.ToolResultEvent:
+			uiResult = v
+		case engine.DoneEvent:
+			history = v.Messages
+		case engine.ErrorEvent:
+			t.Fatalf("engine error: %v", v.Err)
+		}
+	}
+
+	// The UI event keeps the full, untouched output.
+	if uiResult.Result.Content != big {
+		t.Errorf("UI result was altered: got %d bytes, want %d", len(uiResult.Result.Content), len(big))
+	}
+
+	// The model's history holds the condensed copy.
+	got := findToolResult(t, history)
+	if got == big {
+		t.Fatal("model history was not condensed")
+	}
+	if !strings.Contains(got, "(×300)") {
+		t.Errorf("condensed content missing dedup marker: %q", got)
+	}
+	if len(got) >= len(big) {
+		t.Errorf("condensed content not smaller: got %d want < %d", len(got), len(big))
+	}
+}
+
+// findToolResult returns the content of the first ToolResultBlock in history,
+// failing the test if there is none.
+func findToolResult(t *testing.T, history []apiclient.Message) string {
+	t.Helper()
+	for _, m := range history {
+		for _, b := range m.Content {
+			if trb, ok := b.(apiclient.ToolResultBlock); ok {
+				return trb.Content
+			}
+		}
+	}
+	t.Fatal("no ToolResultBlock in history")
+	return ""
+}
+
+// recordingTool is a mock tool that records whether its Execute ran, so a test
+// can assert the engine never executed it.
+type recordingTool struct {
+	name     string
+	executed *bool
+}
+
+func (r recordingTool) Name() string                       { return r.name }
+func (r recordingTool) Description(context.Context) string { return "records execution" }
+func (r recordingTool) InputSchema() *jsonschema.Schema    { return tool.Schema[struct{}]() }
+func (r recordingTool) ReadOnly() bool                     { return true }
+func (r recordingTool) ConcurrencySafe() bool              { return true }
+func (r recordingTool) CheckPermission(context.Context, json.RawMessage, perm.Mode) perm.Decision {
+	return perm.DecisionAllow
+}
+func (r recordingTool) Execute(context.Context, json.RawMessage, tool.Deps) (tool.Result, error) {
+	*r.executed = true
+	return tool.Result{Content: "should not run"}, nil
+}
+
+// TestMaxTokensToolCallNotExecuted verifies the truncation guard: when the model
+// stops at the output token limit ("max_tokens") while emitting tool calls, the
+// engine must not execute them (their arguments may be silently truncated).
+// Instead it records an error tool result per call, emits a matching
+// ToolResultEvent, and loops so the model can retry.
+func TestMaxTokensToolCallNotExecuted(t *testing.T) {
+	t.Parallel()
+
+	client := &mockClient{turns: [][]apiclient.Event{
+		// Turn 1: model emits a tool call but was cut off at the token limit.
+		{
+			apiclient.ToolCallCompleteEvent{ID: "c1", Name: "DoStuff", Input: json.RawMessage(`{}`)},
+			apiclient.MessageCompleteEvent{StopReason: "max_tokens"},
+		},
+		// Turn 2: after seeing the failure, the model produces a final answer.
+		{
+			apiclient.TextDeltaEvent{Text: "retried"},
+			apiclient.MessageCompleteEvent{StopReason: "end_turn"},
+		},
+	}}
+
+	var executed bool
+	registry := tool.NewRegistry()
+	registry.Register(recordingTool{name: "DoStuff", executed: &executed})
+	permEngine := perm.NewEngine(perm.NewModeSelector(perm.ModeBypassPermissions), perm.Rules{}, perm.DenyAsker{})
+	eng := engine.New(client, registry, permEngine, tool.Deps{})
+
+	var toolResult engine.ToolResultEvent
+	var sawStart bool
+	var history []apiclient.Message
+	for evt := range eng.Run(context.Background(), []apiclient.Message{
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: "go"}}},
+	}, "") {
+		switch v := evt.(type) {
+		case engine.ToolStartEvent:
+			sawStart = true
+		case engine.ToolResultEvent:
+			toolResult = v
+		case engine.DoneEvent:
+			history = v.Messages
+		case engine.ErrorEvent:
+			t.Fatalf("engine error: %v", v.Err)
+		}
+	}
+
+	// (a) the tool must never have executed.
+	if executed {
+		t.Error("tool Execute ran despite the truncated (max_tokens) response")
+	}
+	if sawStart {
+		t.Error("tool should not start when the response was truncated")
+	}
+
+	// (c) an error ToolResultEvent was emitted for the call.
+	if toolResult.Name != "DoStuff" || !toolResult.Result.IsError {
+		t.Errorf("ToolResultEvent = %+v, want an IsError result for DoStuff", toolResult)
+	}
+
+	// (b) the post-turn history holds an error ToolResultBlock for the call.
+	var found *apiclient.ToolResultBlock
+	for _, m := range history {
+		for _, b := range m.Content {
+			if trb, ok := b.(apiclient.ToolResultBlock); ok && trb.ToolCallID == "c1" {
+				trb := trb
+				found = &trb
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("no ToolResultBlock for the truncated call in history")
+	}
+	if !found.IsError {
+		t.Errorf("history ToolResultBlock IsError = false, want true (content: %q)", found.Content)
 	}
 }
 

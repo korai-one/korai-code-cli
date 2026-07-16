@@ -1,6 +1,9 @@
 package tool
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Registry holds the set of tools available to the engine.
 type Registry struct {
@@ -27,11 +30,14 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
-// All returns every registered tool in an unspecified order.
+// All returns every registered tool, sorted by name so the order presented to
+// the model (in the request's tool list) and to tests is deterministic across
+// runs rather than dependent on Go's map iteration order.
 func (r *Registry) All() []Tool {
 	out := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, t)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out
 }
