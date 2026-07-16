@@ -23,6 +23,8 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestMerge(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -78,6 +80,30 @@ func TestMerge(t *testing.T) {
 					"added":     {Command: "added-cmd"},
 				},
 			},
+		},
+		{
+			name:     "lsp override (non-nil) wins",
+			base:     config.Settings{LSP: boolPtr(true)},
+			override: config.Settings{LSP: boolPtr(false)},
+			want:     config.Settings{LSP: boolPtr(false)},
+		},
+		{
+			name:     "lsp nil override preserves base",
+			base:     config.Settings{LSP: boolPtr(false)},
+			override: config.Settings{},
+			want:     config.Settings{LSP: boolPtr(false)},
+		},
+		{
+			name:     "checks non-empty override replaces base",
+			base:     config.Settings{Checks: []string{"go build ./..."}},
+			override: config.Settings{Checks: []string{"make check"}},
+			want:     config.Settings{Checks: []string{"make check"}},
+		},
+		{
+			name:     "checks empty override preserves base",
+			base:     config.Settings{Checks: []string{"go vet ./..."}},
+			override: config.Settings{},
+			want:     config.Settings{Checks: []string{"go vet ./..."}},
 		},
 	}
 

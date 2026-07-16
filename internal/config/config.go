@@ -92,6 +92,10 @@ func Defaults() Settings {
 //     first followed by override entries (no de-duplication).
 //   - MCPServers: merged by key; on a key collision the override entry wins.
 //     The result is always a non-nil map.
+//   - LSP (*bool): override wins when it sets the field (non-nil); otherwise the
+//     base value is kept, so a nil override does not clobber a base toggle.
+//   - Checks: override wins when it is non-empty (replace, not union), so a
+//     later layer can redefine the verification command set.
 func Merge(base, override Settings) Settings {
 	merged := base
 
@@ -100,6 +104,12 @@ func Merge(base, override Settings) Settings {
 	}
 	if override.PermissionMode != "" {
 		merged.PermissionMode = override.PermissionMode
+	}
+	if override.LSP != nil {
+		merged.LSP = override.LSP
+	}
+	if len(override.Checks) > 0 {
+		merged.Checks = override.Checks
 	}
 
 	merged.Permissions = Permissions{
