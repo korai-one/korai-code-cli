@@ -234,10 +234,7 @@ func (c *LocalWorkerClient) pump(ctx context.Context, ch chan<- Event) {
 		case localproto.FrameDone:
 			var d localproto.DonePayload
 			_ = localproto.Decode(body, &d)
-			reason := d.FinishReason
-			if reason == "" {
-				reason = "stop"
-			}
+			reason := NormalizeStopReason(d.FinishReason)
 			if sending {
 				deliver(MessageCompleteEvent{StopReason: reason, Usage: usage})
 			}

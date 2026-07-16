@@ -214,7 +214,7 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 			e.usage(req.Model, turn.usage)
 		}
 		if len(turn.toolCalls) == 0 {
-			if turn.stopReason == "max_tokens" {
+			if turn.stopReason == apiclient.StopMaxTokens {
 				slog.Warn("response truncated: hit max output tokens")
 			}
 			// Record the final assistant text so the next turn has it in context.
@@ -231,7 +231,7 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 		// calls may have silently truncated arguments — executing them would be a
 		// correctness bug. Fail them all without running, record the error
 		// results, and loop so the model sees the failure and can retry.
-		if turn.stopReason == "max_tokens" {
+		if turn.stopReason == apiclient.StopMaxTokens {
 			slog.Warn("response truncated: hit max output tokens")
 			assistantContent, results := e.failTruncatedCalls(turn.toolCalls, ch)
 			if turn.text != "" {

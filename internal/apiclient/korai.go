@@ -121,7 +121,7 @@ func (c *KoraiClient) runBuffered(ctx context.Context, req korai.ChatRequest, ch
 	}
 
 	sendKorai(ctx, ch, MessageCompleteEvent{
-		StopReason: choice.FinishReason,
+		StopReason: NormalizeStopReason(choice.FinishReason),
 		Usage: Usage{
 			InputTokens:  int64(resp.Usage.PromptTokens),
 			OutputTokens: int64(resp.Usage.CompletionTokens),
