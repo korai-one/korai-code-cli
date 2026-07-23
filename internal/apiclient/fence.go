@@ -110,6 +110,16 @@ func renderToolInstructions(tools []ToolDef) string {
 	return b.String()
 }
 
+// ToolInstructionSize returns the size in bytes of the fence tool-instruction
+// block that will be added to the system prompt for the given tools. Token
+// estimators use it to account for prompt overhead the engine's message
+// history does not show (the block is rendered inside the client, at the
+// boundary). It is exact for the fence transports and a close upper bound for
+// a hypothetical native-tools backend.
+func ToolInstructionSize(tools []ToolDef) int {
+	return len(renderToolInstructions(tools))
+}
+
 // parseToolFences splits a model reply into its plain text (with every fence
 // removed) and the ordered list of tool calls it contained. It is tolerant of
 // malformed input: an unterminated fence is left in the text rather than

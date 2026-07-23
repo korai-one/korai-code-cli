@@ -93,3 +93,113 @@ func TestEstimateTokens(t *testing.T) {
 		t.Errorf("EstimateTokens = %d, want 3", got)
 	}
 }
+
+func TestEstimateTokensCountsImages(t *testing.T) {
+	t.Parallel()
+	textOnly := []apiclient.Message{userMsg("12345678")}
+	withImage := []apiclient.Message{
+		userMsg("12345678"),
+		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{
+			apiclient.ImageBlock{Source: "data:image/png;base64,AAAA"},
+			apiclient.ImageBlock{Source: "data:image/png;base64,BBBB"},
+		}},
+	}
+	base := compact.EstimateTokens(textOnly)
+	got := compact.EstimateTokens(withImage)
+	// Two images at the flat conservative cost of 1500 tokens each; the data
+	// URI's byte length must NOT leak into the estimate.
+	if want := base + 3000; got != want {
+		t.Errorf("EstimateTokens with images = %d, want %d", got, want)
+	}
+}
+
+func TestEstimateOverheadCountsSystemAndTools(t *testing.T) {
+	t.Parallel()
+	system := strings.Repeat("s", 400)
+	if got := compact.EstimateOverhead(system, nil); got != 100 {
+		t.Errorf("EstimateOverhead(system only) = %d, want 100", got)
+	}
+	tools := []apiclient.ToolDef{{
+		Name:        "Bash",
+		Description: "runs a command",
+		InputSchema: []byte(`{"type":"object","properties":{"command":{"type":"string"}}}`),
+	}}
+	withTools := compact.EstimateOverhead(system, tools)
+	if withTools <= 100 {
+		t.Errorf("EstimateOverhead with tools = %d, want > system-only estimate (the fence block is real prompt bytes)", withTools)
+	}
+}
+
+// noisyToolResult builds a user message holding a tool result with n identical
+// lines — highly compressible by the deterministic condenser.
+func noisyToolResult(id string, n int) apiclient.Message {
+	return apiclient.Message{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{
+		apiclient.ToolResultBlock{ToolCallID: id, Content: strings.Repeat("downloading artifact...\n", n)},
+	}}
+}
+
+func TestCondenseOlderSquashesOnlyStaleToolResults(t *testing.T) {
+	t.Parallel()
+	msgs := []apiclient.Message{
+		noisyToolResult("old", 200),
+		userMsg("middle"),
+		noisyToolResult("recent", 200),
+	}
+	out := compact.CondenseOlder(msgs, 1)
+
+	oldResult := out[0].Content[0].(apiclient.ToolResultBlock)
+	if len(oldResult.Content) >= len(msgs[0].Content[0].(apiclient.ToolResultBlock).Content) {
+		t.Error("stale tool result was not condensed")
+	}
+	recent := out[2].Content[0].(apiclient.ToolResultBlock)
+	if recent.Content != msgs[2].Content[0].(apiclient.ToolResultBlock).Content {
+		t.Error("tool result inside the keep-recent window was modified")
+	}
+	// The input slice and its blocks are untouched (copy-on-write).
+	if msgs[0].Content[0].(apiclient.ToolResultBlock).Content == oldResult.Content {
+		t.Error("CondenseOlder mutated its input")
+	}
+}
+
+func TestAutoDeterministicTierSuffices(t *testing.T) {
+	t.Parallel()
+	client := &fakeClient{summary: "should not be needed"}
+	msgs := []apiclient.Message{
+		noisyToolResult("a", 400),
+		userMsg("1"), userMsg("2"), userMsg("3"), userMsg("4"),
+	}
+	// The condensed history easily fits a generous budget, so the LLM tier
+	// must not run.
+	out, err := compact.Auto(context.Background(), client, msgs, 4, 5_000)
+	if err != nil {
+		t.Fatalf("Auto: %v", err)
+	}
+	if client.gotReq.System != "" {
+		t.Error("LLM tier ran although the deterministic tier fit the budget")
+	}
+	if len(out) != len(msgs) {
+		t.Errorf("deterministic tier changed message count: %d → %d", len(msgs), len(out))
+	}
+	if got := out[0].Content[0].(apiclient.ToolResultBlock).Content; len(got) >= 400*len("downloading artifact...\n") {
+		t.Error("stale tool result not condensed on the deterministic tier")
+	}
+}
+
+func TestAutoFallsThroughToLLM(t *testing.T) {
+	t.Parallel()
+	client := &fakeClient{summary: "compressed earlier work"}
+	msgs := []apiclient.Message{
+		userMsg(strings.Repeat("unique text that cannot be condensed ", 50)),
+		userMsg("1"), userMsg("2"), userMsg("3"), userMsg("4"), userMsg("5"),
+	}
+	out, err := compact.Auto(context.Background(), client, msgs, 2, 10)
+	if err != nil {
+		t.Fatalf("Auto: %v", err)
+	}
+	if client.gotReq.System == "" {
+		t.Error("LLM tier did not run although the budget was exceeded")
+	}
+	if len(out) != 3 { // summary + 2 recent
+		t.Errorf("got %d messages, want 3", len(out))
+	}
+}

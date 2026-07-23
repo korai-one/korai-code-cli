@@ -45,7 +45,9 @@ type Engine struct {
 	filter       ToolResultFilter
 	compactFn    CompactFunc
 	compactMax   int
+	thresholdFn  func() int
 	estimate     func([]apiclient.Message) int
+	overhead     OverheadEstimator
 	maxToolTurns int
 	sampling     apiclient.Sampling
 
@@ -182,15 +184,40 @@ func WithSamplingDefaults(s apiclient.Sampling) Option {
 	return func(e *Engine) { e.sampling = s }
 }
 
-// WithAutoCompact enables automatic compaction: before a turn, if the history's
-// estimated token count exceeds maxTokens, fn is called to summarize it. A nil
-// fn or non-positive maxTokens disables auto-compaction.
+// WithAutoCompact enables automatic compaction: before a turn — and again
+// between tool-loop iterations — if the history's estimated token count
+// exceeds maxTokens, fn is called to summarize it. Intra-turn re-checks only
+// ever compact history from before the current Run; the running turn's own
+// messages are always kept verbatim. A nil fn or non-positive maxTokens
+// disables auto-compaction.
 func WithAutoCompact(maxTokens int, estimate func([]apiclient.Message) int, fn CompactFunc) Option {
 	return func(e *Engine) {
 		e.compactMax = maxTokens
 		e.compactFn = fn
 		e.estimate = estimate
 	}
+}
+
+// WithCompactThreshold attaches a dynamic auto-compaction threshold, consulted
+// on every check; a positive return overrides WithAutoCompact's static
+// maxTokens. This is how a model-aware threshold (a fraction of the discovered
+// context window) reaches the engine without the engine knowing how it was
+// discovered. A nil fn or non-positive return keeps the static value.
+func WithCompactThreshold(fn func() int) Option {
+	return func(e *Engine) { e.thresholdFn = fn }
+}
+
+// OverheadEstimator estimates the token cost of the per-request prompt
+// overhead that message history does not show: the composed system prompt and
+// the tool definitions (rendered into the prompt by the client). The engine
+// adds it to the history estimate for threshold decisions.
+type OverheadEstimator func(system string, tools []apiclient.ToolDef) int
+
+// WithOverheadEstimator attaches an overhead estimator to the auto-compaction
+// decision, making the estimate honest about the system prompt and tool
+// schemas. A nil estimator counts history only (the historical behavior).
+func WithOverheadEstimator(fn OverheadEstimator) Option {
+	return func(e *Engine) { e.overhead = fn }
 }
 
 // New creates an Engine with the given inference client, tool registry,
@@ -242,14 +269,31 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	copy(history, messages)
 
 	e.fireHook(ctx, HookSessionStart, "", nil)
-	history = e.maybeCompact(ctx, history, ch)
+	history = e.maybeCompact(ctx, history, system, ch)
+
+	// Everything at or beyond runStart belongs to this Run and is never
+	// compacted by the intra-turn re-check below. The trailing user message is
+	// the prompt that started this Run, so it is part of the in-flight turn.
+	runStart := len(history)
+	if runStart > 0 && history[runStart-1].Role == apiclient.RoleUser {
+		runStart--
+	}
 
 	detect := newLoopDetector()
 	toolTurns := 0
+	iterations := 0
 	fenceRetried := false
 	constrainNext := false
 
 	for {
+		// Between tool-loop iterations, re-check the compaction threshold: a
+		// tool-heavy turn can blow past it long before the next Run would have
+		// compacted. Only pre-run history is ever compacted.
+		if iterations > 0 {
+			history, runStart = e.maybeCompactOlder(ctx, history, runStart, system, ch)
+		}
+		iterations++
+
 		// Fold in any text the user typed mid-turn before building the request.
 		history = e.drainSteering(history)
 		req := e.buildRequest(ctx, history, system)
@@ -407,14 +451,41 @@ func (e *Engine) wrapUp(ctx context.Context, history []apiclient.Message, system
 	return history, nil
 }
 
+// compactEnabled reports whether auto-compaction is configured at all.
+func (e *Engine) compactEnabled() bool {
+	return e.compactFn != nil && e.estimate != nil && e.effectiveThreshold() > 0
+}
+
+// effectiveThreshold resolves the auto-compaction threshold: the dynamic
+// function when attached and positive, else the static maxTokens.
+func (e *Engine) effectiveThreshold() int {
+	if e.thresholdFn != nil {
+		if v := e.thresholdFn(); v > 0 {
+			return v
+		}
+	}
+	return e.compactMax
+}
+
+// estimateTotal is the honest size estimate for a would-be request: the
+// history estimate plus (when an overhead estimator is attached) the composed
+// system prompt and tool-schema overhead the history does not show.
+func (e *Engine) estimateTotal(ctx context.Context, history []apiclient.Message, system string) int {
+	total := e.estimate(history)
+	if e.overhead != nil {
+		total += e.overhead(e.composeSystem(history, system), e.toolDefs(ctx))
+	}
+	return total
+}
+
 // maybeCompact summarizes history before a turn when it has grown past the
-// configured token threshold. On failure it logs and keeps the original history
+// effective token threshold. On failure it logs and keeps the original history
 // (fail-open: a compaction error must not abort the turn).
-func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, ch chan<- Event) []apiclient.Message {
-	if e.compactFn == nil || e.estimate == nil || e.compactMax <= 0 {
+func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, system string, ch chan<- Event) []apiclient.Message {
+	if !e.compactEnabled() {
 		return history
 	}
-	if e.estimate(history) <= e.compactMax {
+	if e.estimateTotal(ctx, history, system) <= e.effectiveThreshold() {
 		return history
 	}
 	before := len(history)
@@ -425,6 +496,43 @@ func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, 
 	}
 	send(ch, CompactedEvent{Before: before, After: len(compacted)})
 	return compacted
+}
+
+// maybeCompactOlder is the intra-turn re-check, run between tool-loop
+// iterations: when the honest estimate crosses the threshold mid-turn it
+// compacts ONLY the history that predates this Run (history[:runStart]) and
+// re-appends the current run's messages verbatim — the in-flight turn's
+// context must never be summarized out from under the model. When the current
+// run's messages alone exceed the budget there is nothing safe to compact, so
+// it logs a warning and proceeds. Fail-open like maybeCompact. It returns the
+// (possibly new) history and runStart.
+func (e *Engine) maybeCompactOlder(ctx context.Context, history []apiclient.Message, runStart int, system string, ch chan<- Event) ([]apiclient.Message, int) {
+	if !e.compactEnabled() || runStart <= 0 || runStart > len(history) {
+		return history, runStart
+	}
+	threshold := e.effectiveThreshold()
+	if e.estimateTotal(ctx, history, system) <= threshold {
+		return history, runStart
+	}
+	current := history[runStart:]
+	if e.estimateTotal(ctx, current, system) > threshold {
+		slog.Warn("current turn alone exceeds the compaction budget; skipping intra-turn compaction",
+			"threshold", threshold)
+		return history, runStart
+	}
+	compacted, err := e.compactFn(ctx, history[:runStart])
+	if err != nil {
+		slog.Warn("intra-turn auto-compaction failed; continuing without it", "error", err)
+		return history, runStart
+	}
+	if len(compacted) >= runStart {
+		return history, runStart // nothing gained; avoid a no-op event
+	}
+	merged := make([]apiclient.Message, 0, len(compacted)+len(current))
+	merged = append(merged, compacted...)
+	merged = append(merged, current...)
+	send(ch, CompactedEvent{Before: len(history), After: len(merged)})
+	return merged, len(compacted)
 }
 
 // turnResult captures what a single model turn produced.
@@ -597,7 +705,28 @@ func (e *Engine) blocked(ch chan<- Event, name, reason string) tool.Result {
 }
 
 func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, system string) apiclient.Request {
-	tools := e.registry.All()
+	req := apiclient.Request{
+		System:   e.composeSystem(history, system),
+		Messages: history,
+		Tools:    e.toolDefs(ctx),
+		Sampling: e.sampling,
+	}
+	if e.models != nil {
+		req.Model = e.models.Get()
+	}
+	return req
+}
+
+// toolDefs renders the registry into the wire tool definitions.
+func (e *Engine) toolDefs(ctx context.Context) []apiclient.ToolDef {
+	return ToolDefs(ctx, e.registry)
+}
+
+// ToolDefs converts every tool in registry into its apiclient definition — the
+// same conversion buildRequest performs, exported so the session layer can
+// estimate the prompt overhead of the tool block without duplicating it.
+func ToolDefs(ctx context.Context, registry *tool.Registry) []apiclient.ToolDef {
+	tools := registry.All()
 	toolDefs := make([]apiclient.ToolDef, 0, len(tools))
 	for _, t := range tools {
 		raw, err := json.Marshal(t.InputSchema())
@@ -610,17 +739,7 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 			InputSchema: raw,
 		})
 	}
-	system = e.composeSystem(history, system)
-	req := apiclient.Request{
-		System:   system,
-		Messages: history,
-		Tools:    toolDefs,
-		Sampling: e.sampling,
-	}
-	if e.models != nil {
-		req.Model = e.models.Get()
-	}
-	return req
+	return toolDefs
 }
 
 // composeSystem assembles the effective system prompt for a request: the

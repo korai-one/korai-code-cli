@@ -58,8 +58,21 @@ type assembled struct {
 	modes     *perm.ModeSelector
 	cost      *cost.Tracker
 	compactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
-	hooks     engine.HookFunc
-	condense  engine.ToolResultFilter
+	// autoCompactor is the tiered function behind engine auto-compaction:
+	// deterministic condensing of stale tool results first, LLM summarization
+	// only when that is not enough. The manual /compact path keeps the plain
+	// summarizing compactor above — an explicit request should summarize.
+	autoCompactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
+	// threshold is the effective auto-compaction threshold: the 120k default,
+	// lowered when the backend reports a smaller model context window
+	// (discovered in the background at assembly).
+	threshold *compact.Threshold
+	// contextOverhead is the estimated token cost of the static prompt
+	// overhead (system prompt + tool schemas) the TUI's context meter adds to
+	// its history estimate.
+	contextOverhead int
+	hooks           engine.HookFunc
+	condense        engine.ToolResultFilter
 	// memSection renders the persistent-memory system-prompt section for the
 	// latest user message; wired into engine.WithSystemSection.
 	memSection func(latestUserText string) string
@@ -321,6 +334,26 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		return compact.Compact(cctx, client, history, compact.DefaultKeepRecent)
 	}
 
+	// The auto-compaction threshold starts at the 120k default and is lowered
+	// in the background when the backend reports the model's real context
+	// window (orchestrator /v1/models context_len). The direct worker channel
+	// and the worker loopback endpoint advertise none, so they keep the
+	// default — see compact.Threshold's fallback chain.
+	threshold := compact.NewThreshold()
+	go func() {
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		threshold.Discover(dctx, client, model)
+	}()
+	autoCompactor := func(cctx context.Context, history []apiclient.Message) ([]apiclient.Message, error) {
+		return compact.Auto(cctx, client, history, compact.DefaultKeepRecent, threshold.Value())
+	}
+
+	// Static prompt overhead for the TUI context meter: the system prompt plus
+	// the fence tool-instruction block. The per-turn memory section is not
+	// included (it is small and varies); this is a floor, not an exact count.
+	contextOverhead := compact.EstimateOverhead(system, engine.ToolDefs(ctx, registry))
+
 	// Shadow-git snapshots: a worktree checkpoint is taken before each turn and
 	// /revert restores one. The Manager is a no-op when git is absent; the Log
 	// is the in-session (label, id) history /snapshots renders and /revert reads.
@@ -366,21 +399,24 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 
 	return &assembled{
-		client:     client,
-		registry:   registry,
-		commands:   buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog, clientSelector),
-		models:     models,
-		modes:      modes,
-		cost:       costTracker,
-		compactor:  compactor,
-		hooks:      withMemoryTurnReset(buildHooks(settings.Hooks), store),
-		condense:   buildCondenser(settings.Condense),
-		memSection: memSection,
-		rules:      rules,
-		system:     system,
-		deps:       deps,
-		closers:    closers,
-		authGate:   authGate,
+		client:          client,
+		registry:        registry,
+		commands:        buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog, clientSelector),
+		models:          models,
+		modes:           modes,
+		cost:            costTracker,
+		compactor:       compactor,
+		autoCompactor:   autoCompactor,
+		threshold:       threshold,
+		contextOverhead: contextOverhead,
+		hooks:           withMemoryTurnReset(buildHooks(settings.Hooks), store),
+		condense:        buildCondenser(settings.Condense),
+		memSection:      memSection,
+		rules:           rules,
+		system:          system,
+		deps:            deps,
+		closers:         closers,
+		authGate:        authGate,
 
 		fileFinder:      workspaceFiles(wd),
 		mentionExpander: mentionExpander(wd),

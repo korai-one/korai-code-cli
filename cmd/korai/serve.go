@@ -269,7 +269,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		engine.WithUsageRecorder(s.sess.cost.Add), engine.WithSystemSuffix(planSuffix(s.sess.modes)),
 		engine.WithSystemSection(s.sess.memSection),
 		engine.WithToolResultFilter(s.sess.condense),
-		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, s.sess.compactor))
+		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, s.sess.autoCompactor),
+		engine.WithCompactThreshold(s.sess.threshold.Value),
+		engine.WithOverheadEstimator(compact.EstimateOverhead))
 
 	// cancelTurn cancels the in-flight turn for abort; guarded because the read
 	// loop (abort) and the worker (set/clear) both touch it.

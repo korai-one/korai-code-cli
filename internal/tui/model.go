@@ -71,11 +71,19 @@ type Model struct {
 	entries   []entry
 	streaming bool // an assistant entry is currently being appended to
 
-	// contextTokens caches the estimated token size of history, refreshed
-	// whenever history changes. Drives the context-usage meter in the status
-	// line (how close the session is to an auto-compact). Zero on an empty
-	// session, which hides the meter.
+	// contextTokens caches the estimated token size of history (plus the
+	// static prompt overhead, see WithContextOverhead), refreshed whenever
+	// history changes. Drives the context-usage meter in the status line (how
+	// close the session is to an auto-compact). Zero on an empty session,
+	// which hides the meter.
 	contextTokens int
+	// contextOverhead is the estimated token cost of the system prompt + tool
+	// schemas, added to the history estimate so the meter is honest about what
+	// a request really costs. Zero when not wired.
+	contextOverhead int
+	// contextLimit returns the effective auto-compaction threshold the meter
+	// divides by; nil falls back to compact.DefaultThreshold.
+	contextLimit func() int
 
 	input    textinput.Model
 	spinner  spinner.Model
@@ -307,6 +315,23 @@ func (m Model) WithActiveSync(interval time.Duration) Model {
 	return m
 }
 
+// WithContextLimit wires the effective auto-compaction threshold provider for
+// the context meter, so the meter tracks a model-aware threshold instead of
+// the static default. Call before tea.NewProgram.
+func (m Model) WithContextLimit(limit func() int) Model {
+	m.contextLimit = limit
+	return m
+}
+
+// WithContextOverhead sets the estimated token cost of the static prompt
+// overhead (system prompt + tool schemas), added to the history estimate the
+// context meter shows. Call before tea.NewProgram.
+func (m Model) WithContextOverhead(tokens int) Model {
+	m.contextOverhead = tokens
+	m.recomputeContext()
+	return m
+}
+
 // WithSession seeds the active session id, its creation time, and any prior
 // history (e.g. from --resume or --continue). Call before tea.NewProgram.
 func (m Model) WithSession(id string, created time.Time, history []apiclient.Message) Model {
@@ -322,7 +347,7 @@ func (m Model) WithSession(id string, created time.Time, history []apiclient.Mes
 // history so the status-line meter reflects how close the session is to an
 // auto-compact. Call after any change to m.history.
 func (m *Model) recomputeContext() {
-	m.contextTokens = compact.EstimateTokens(m.history)
+	m.contextTokens = m.contextOverhead + compact.EstimateTokens(m.history)
 }
 
 // Init starts the input cursor blink and begins listening for permission and
@@ -1595,15 +1620,22 @@ func (m Model) statusLine() string {
 }
 
 // contextSegment renders the context-usage meter ("ctx 42%"): the estimated
-// history size as a percentage of the auto-compaction threshold, colored to
-// warn as a compact approaches (muted under 70%, warning 70–90%, error above
-// 90%). It returns "" when the session has no history yet, so an empty session
-// shows no meter.
+// history size as a percentage of the effective auto-compaction threshold
+// (model-aware when WithContextLimit is wired, the static default otherwise),
+// colored to warn as a compact approaches (muted under 70%, warning 70–90%,
+// error above 90%). It returns "" when the session has no history yet, so an
+// empty session shows no meter.
 func (m Model) contextSegment() string {
 	if m.contextTokens <= 0 {
 		return ""
 	}
-	pct := m.contextTokens * 100 / compact.DefaultThreshold
+	limit := compact.DefaultThreshold
+	if m.contextLimit != nil {
+		if v := m.contextLimit(); v > 0 {
+			limit = v
+		}
+	}
+	pct := m.contextTokens * 100 / limit
 	text := fmt.Sprintf("ctx %d%%", pct)
 	switch {
 	case pct > 90:
