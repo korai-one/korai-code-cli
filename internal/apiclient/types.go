@@ -22,6 +22,59 @@ type Request struct {
 	Messages  []Message
 	Tools     []ToolDef
 	MaxTokens int64
+
+	// Sampling carries optional decoding parameters; the zero value means
+	// "backend defaults" throughout.
+	Sampling Sampling
+
+	// Grammar is a raw GBNF grammar constraining the completion. Wins over
+	// JSONSchema when both are set. Backends without grammar support ignore it
+	// silently, degrading to unconstrained decoding.
+	Grammar string
+
+	// JSONSchema constrains the completion to structured output. Ignored when
+	// Grammar is set.
+	JSONSchema json.RawMessage
+
+	// ConstrainTools opts this turn into grammar-enforced tool fences: when set
+	// (and Grammar/JSONSchema are empty) a transport that can, attaches — or
+	// has the worker generate — a closed-alternation GBNF grammar over Tools,
+	// so the model is syntactically incapable of a malformed fence. Opt-in per
+	// turn ON PURPOSE: a fence grammar forces the model to emit a tool call,
+	// which would strangle prose turns. The engine sets it only on the
+	// malformed-fence retry turn.
+	ConstrainTools bool
+}
+
+// Sampling carries optional per-request decoding parameters. Pointer semantics
+// mirror the Korai wire contract: nil means "absent — backend default", a
+// non-nil pointer to zero is a deliberate zero that must survive the wire.
+// (Temperature and TopP ride OpenAI-compatible non-pointer wire fields with
+// omitempty on some transports, where an explicit zero is indistinguishable
+// from absent — a known wire limitation shared with the Korai repo.)
+type Sampling struct {
+	// Temperature scales the sampling distribution (0 = greedy-ish).
+	Temperature *float64
+	// TopP is nucleus sampling: keep the smallest set of tokens whose
+	// cumulative probability exceeds TopP.
+	TopP *float64
+	// TopK limits sampling to the K most likely tokens.
+	TopK *int
+	// MinP discards tokens below MinP × p(top token).
+	MinP *float64
+	// Seed pins the sampling RNG for reproducible generations.
+	Seed *int
+	// RepeatPenalty is the llama.cpp-style repetition penalty (1.0 = off).
+	RepeatPenalty *float64
+	// FrequencyPenalty / PresencePenalty are the OpenAI-style penalties.
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+}
+
+// isZero reports whether every sampling parameter is absent.
+func (s Sampling) isZero() bool {
+	return s.Temperature == nil && s.TopP == nil && s.TopK == nil && s.MinP == nil &&
+		s.Seed == nil && s.RepeatPenalty == nil && s.FrequencyPenalty == nil && s.PresencePenalty == nil
 }
 
 // Message is one turn in a conversation.

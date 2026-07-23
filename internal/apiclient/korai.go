@@ -56,18 +56,26 @@ func (c *KoraiClient) Complete(ctx context.Context, req Request) (<-chan Event, 
 	ch := make(chan Event, 64)
 	go func() {
 		defer close(ch)
-		c.runBuffered(ctx, chatReq, ch)
+		c.runBuffered(ctx, chatReq, req, ch)
 	}()
 	return ch, nil
 }
 
-// runBuffered calls ChatComplete and replays the single response as the same
-// ordered Event sequence a streaming backend would produce: text, then one
-// start+complete pair per tool call, then a final MessageCompleteEvent carrying
-// real usage. Sends are blocking and honour ctx so a cancelled turn stops
-// promptly without dropping events.
-func (c *KoraiClient) runBuffered(ctx context.Context, req korai.ChatRequest, ch chan<- Event) {
-	resp, err := c.inner.ChatComplete(ctx, req)
+// runBuffered runs one buffered completion — through the SDK's ChatComplete,
+// or the extended raw path when req carries fields SDK v0.4.0 does not model —
+// and replays the single response as the same ordered Event sequence a
+// streaming backend would produce: text, then one start+complete pair per tool
+// call, then a final MessageCompleteEvent carrying real usage. Sends are
+// blocking and honour ctx so a cancelled turn stops promptly without dropping
+// events.
+func (c *KoraiClient) runBuffered(ctx context.Context, chatReq korai.ChatRequest, req Request, ch chan<- Event) {
+	var resp *korai.ChatResponse
+	var err error
+	if needsExtendedRequest(req) {
+		resp, err = c.chatCompleteExtended(ctx, chatReq, req)
+	} else {
+		resp, err = c.inner.ChatComplete(ctx, chatReq)
+	}
 	if err != nil {
 		sendKorai(ctx, ch, ErrorEvent{Err: fmt.Errorf("korai: chat complete: %w", err)})
 		return

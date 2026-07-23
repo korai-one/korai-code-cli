@@ -166,6 +166,64 @@ func TestLocalWorkerSendsTurnPayload(t *testing.T) {
 	}
 }
 
+// TestLocalWorkerSendsExtendedSampling verifies the extended sampling and
+// constrained-decoding fields reach the Open frame with pointer semantics
+// intact (a deliberate zero seed survives) and that ConstrainTools is
+// forwarded for the worker to resolve.
+func TestLocalWorkerSendsExtendedSampling(t *testing.T) {
+	worker := &fakeWorker{
+		reply: func(conn net.Conn, _ localproto.OpenPayload) {
+			_ = localproto.WriteJSON(conn, localproto.FrameDone, localproto.DonePayload{FinishReason: "stop"})
+		},
+	}
+	c := newLocalWorkerClient("auto", "", worker.dial)
+
+	seed := 0
+	topK := 40
+	minP := 0.05
+	temp := 0.2
+	req := Request{
+		Messages: []Message{userMsg("hi")},
+		Sampling: Sampling{
+			Temperature: &temp,
+			Seed:        &seed,
+			TopK:        &topK,
+			MinP:        &minP,
+		},
+		Grammar:        "root ::= \"yes\"",
+		ConstrainTools: true,
+	}
+	collect(t, mustComplete(t, c, req))
+
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if len(worker.opens) != 1 {
+		t.Fatalf("opens = %d, want 1", len(worker.opens))
+	}
+	s := worker.opens[0].Sampling
+	if s.Temperature != 0.2 {
+		t.Errorf("temperature = %v, want 0.2", s.Temperature)
+	}
+	if s.Seed == nil || *s.Seed != 0 {
+		t.Errorf("seed = %v, want explicit 0 (deliberate zero must survive)", s.Seed)
+	}
+	if s.TopK == nil || *s.TopK != 40 {
+		t.Errorf("top_k = %v, want 40", s.TopK)
+	}
+	if s.MinP == nil || *s.MinP != 0.05 {
+		t.Errorf("min_p = %v, want 0.05", s.MinP)
+	}
+	if s.Grammar != "root ::= \"yes\"" {
+		t.Errorf("grammar = %q", s.Grammar)
+	}
+	if !s.ConstrainTools {
+		t.Error("constrain_tools not forwarded")
+	}
+	if s.RepeatPenalty != nil || s.FrequencyPenalty != nil || s.PresencePenalty != nil {
+		t.Error("absent sampling fields must stay nil on the wire")
+	}
+}
+
 func TestLocalWorkerErrorFrame(t *testing.T) {
 	worker := &fakeWorker{
 		reply: func(conn net.Conn, _ localproto.OpenPayload) {
@@ -204,7 +262,7 @@ func TestLocalWorkerImageMessageBecomesParts(t *testing.T) {
 	}
 }
 
-func mustComplete(t *testing.T, c *LocalWorkerClient, req Request) <-chan Event {
+func mustComplete(t *testing.T, c Client, req Request) <-chan Event {
 	t.Helper()
 	ch, err := c.Complete(context.Background(), req)
 	if err != nil {

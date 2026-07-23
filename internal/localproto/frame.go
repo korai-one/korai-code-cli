@@ -189,11 +189,48 @@ type ToolDef struct {
 
 // Sampling carries per-generation decoding parameters. Zero values mean "worker
 // default".
+//
+// The extended subset (Grammar … ConstrainTools) is a byte-for-byte mirror of
+// the worker repo's hostproto.Sampling — KEEP THE TWO IN LOCKSTEP. The
+// pointer fields carry a deliberate zero across the wire (nil = absent); all
+// extended fields are additive + omitempty so older workers simply ignore
+// them. Do NOT rename or re-type existing fields.
+//
+// Constrained decoding: Grammar (raw GBNF) wins over JSONSchema when both are
+// set. Enforcement is backend-dependent worker-side (llama-server yes, MLX
+// no) — workers that don't understand these fields ignore them.
 type Sampling struct {
 	MaxTokens   int      `json:"max_tokens,omitempty"`
 	Temperature float64  `json:"temperature,omitempty"`
 	TopP        float64  `json:"top_p,omitempty"`
 	Stop        []string `json:"stop,omitempty"`
+
+	// Grammar is a raw GBNF grammar constraining the generation. Wins over
+	// JSONSchema when both are set.
+	Grammar string `json:"grammar,omitempty"`
+	// JSONSchema constrains the generation to structured output. Ignored
+	// when Grammar is set.
+	JSONSchema json.RawMessage `json:"json_schema,omitempty"`
+	// Seed pins the sampling RNG for reproducible generations.
+	Seed *int `json:"seed,omitempty"`
+	// TopK limits sampling to the K most likely tokens.
+	TopK *int `json:"top_k,omitempty"`
+	// MinP discards tokens below MinP × p(top token).
+	MinP *float64 `json:"min_p,omitempty"`
+	// RepeatPenalty is the llama.cpp-style repetition penalty (1.0 = off).
+	RepeatPenalty *float64 `json:"repeat_penalty,omitempty"`
+	// FrequencyPenalty / PresencePenalty are the OpenAI-style penalties.
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+
+	// ConstrainTools opts this turn in to grammar-enforced tool fences: when
+	// set (and Grammar/JSONSchema are empty) the worker generates a GBNF
+	// grammar over the turn's ToolDefs and attaches it to the request. Opt-in
+	// per turn ON PURPOSE — a fence grammar forces the model to emit a tool
+	// call, which would strangle prose turns. Enforcement only takes effect
+	// when the worker's backing engine supports grammars (llama-server);
+	// elsewhere the attached grammar is silently dropped.
+	ConstrainTools bool `json:"constrain_tools,omitempty"`
 }
 
 // OpenPayload carries a full turn and triggers a generation.
