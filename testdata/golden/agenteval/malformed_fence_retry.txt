@@ -1,0 +1,5 @@
+TEXT "Let me read it. <tool:ReadFile>{\"path\": \"a.txt\""
+TOOL_START ReadFile {"path":"a.txt"}
+TOOL_RESULT ReadFile error=false "alpha\n"
+TEXT "The file contains alpha."
+DONE

@@ -1,0 +1,8 @@
+TOOL_START ReadFile {"path":"f0.txt"}
+TOOL_RESULT ReadFile error=false "zero\n"
+TOOL_START ReadFile {"path":"f1.txt"}
+TOOL_RESULT ReadFile error=false "one\n"
+TOOL_START ReadFile {"path":"f2.txt"}
+TOOL_RESULT ReadFile error=false "two\n"
+TEXT "Budget summary: read three files."
+DONE

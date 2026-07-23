@@ -1,0 +1,5 @@
+TOOL_RESULT Edit error=true "tool call not executed: response truncated at the output token limit before arguments were complete; retry"
+TOOL_START Edit {"path":"main.txt","old_string":"world","new_string":"korai"}
+TOOL_RESULT Edit error=false "replaced 1 occurrence(s) in <workdir>/main.txt"
+TEXT "Edited after the retry."
+DONE
