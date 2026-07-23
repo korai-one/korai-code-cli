@@ -1,0 +1,8 @@
+TOOL_START Same {"q":"status"}
+TOOL_RESULT Same error=false "state: unchanged"
+TOOL_START Same {"q":"status"}
+TOOL_RESULT Same error=false "state: unchanged\n\n[loop detector] This exact tool call was already made and returned the same result. Do not repeat it — change the arguments or the approach."
+TOOL_RESULT Same error=true "tool call skipped: this exact Same call was already made twice with identical results. Repeating it will not make progress — change your approach: use different arguments, a different tool, or answer with what you already know."
+TOOL_RESULT Same error=true "tool call skipped: this exact Same call was already made twice with identical results. Repeating it will not make progress — change your approach: use different arguments, a different tool, or answer with what you already know."
+TEXT "giving my final answer without more tool calls"
+DONE

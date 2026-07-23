@@ -26,20 +26,26 @@ const (
 	HookPostToolUse  = "PostToolUse"
 )
 
+// DefaultMaxToolTurns is the default cap on tool-loop iterations per Run. It is
+// generous enough for real multi-step work while bounding a runaway loop; see
+// WithMaxToolTurns.
+const DefaultMaxToolTurns = 24
+
 // Engine drives the LLM tool-calling loop for a single conversation turn.
 type Engine struct {
-	client     apiclient.Client
-	registry   *tool.Registry
-	perm       *perm.Engine
-	deps       tool.Deps
-	hooks      HookFunc
-	models     *apiclient.ModelSelector
-	usage      UsageRecorder
-	sysSuffix  func() string
-	filter     ToolResultFilter
-	compactFn  CompactFunc
-	compactMax int
-	estimate   func([]apiclient.Message) int
+	client       apiclient.Client
+	registry     *tool.Registry
+	perm         *perm.Engine
+	deps         tool.Deps
+	hooks        HookFunc
+	models       *apiclient.ModelSelector
+	usage        UsageRecorder
+	sysSuffix    func() string
+	filter       ToolResultFilter
+	compactFn    CompactFunc
+	compactMax   int
+	estimate     func([]apiclient.Message) int
+	maxToolTurns int
 
 	// steerMu guards steer: user text injected mid-turn (see Enqueue), drained
 	// into history at the top of each tool-loop iteration.
@@ -141,6 +147,19 @@ func WithToolResultFilter(f ToolResultFilter) Option {
 	return func(e *Engine) { e.filter = f }
 }
 
+// WithMaxToolTurns caps the number of tool-loop iterations in a single Run.
+// When the cap is reached the engine never hard-aborts: it forces a graceful
+// wrap-up — a synthetic user instruction telling the model to summarize and
+// finish, followed by one final turn with tools stripped from the request.
+// n <= 0 keeps DefaultMaxToolTurns.
+func WithMaxToolTurns(n int) Option {
+	return func(e *Engine) {
+		if n > 0 {
+			e.maxToolTurns = n
+		}
+	}
+}
+
 // WithAutoCompact enables automatic compaction: before a turn, if the history's
 // estimated token count exceeds maxTokens, fn is called to summarize it. A nil
 // fn or non-positive maxTokens disables auto-compaction.
@@ -156,10 +175,11 @@ func WithAutoCompact(maxTokens int, estimate func([]apiclient.Message) int, fn C
 // permission engine, and tool dependencies.
 func New(client apiclient.Client, registry *tool.Registry, permEngine *perm.Engine, deps tool.Deps, opts ...Option) *Engine {
 	e := &Engine{
-		client:   client,
-		registry: registry,
-		perm:     permEngine,
-		deps:     deps,
+		client:       client,
+		registry:     registry,
+		perm:         permEngine,
+		deps:         deps,
+		maxToolTurns: DefaultMaxToolTurns,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -202,6 +222,10 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	e.fireHook(ctx, HookSessionStart, "", nil)
 	history = e.maybeCompact(ctx, history, ch)
 
+	detect := newLoopDetector()
+	toolTurns := 0
+	fenceRetried := false
+
 	for {
 		// Fold in any text the user typed mid-turn before building the request.
 		history = e.drainSteering(history)
@@ -213,6 +237,28 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 		if e.usage != nil {
 			e.usage(req.Model, turn.usage)
 		}
+
+		// Malformed-fence guard: when the turn carries a tool payload the fence
+		// layer could not parse cleanly (an unterminated fence remnant in the
+		// text, or a call body that is not a valid JSON object), retry once with
+		// a corrective notice instead of executing or silently finishing. Skipped
+		// on a token-truncated turn — the truncation guard below owns that case.
+		if !fenceRetried && turn.stopReason != apiclient.StopMaxTokens {
+			if frags := apiclient.MalformedFences(turn.text, turn.toolCalls); len(frags) > 0 {
+				fenceRetried = true
+				slog.Warn("malformed tool call in model reply; retrying turn once", "fragments", len(frags))
+				// Record the turn as flattened fence text: an unexecuted
+				// ToolCallBlock would demand a matching result block, and a
+				// malformed body may not even re-marshal as JSON.
+				history = append(history, apiclient.Message{
+					Role:    apiclient.RoleAssistant,
+					Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: apiclient.RenderAssistantTurnText(turn.text, turn.toolCalls)}},
+				})
+				e.Enqueue(apiclient.FenceCorrectionNotice(frags))
+				continue
+			}
+		}
+
 		if len(turn.toolCalls) == 0 {
 			if turn.stopReason == apiclient.StopMaxTokens {
 				slog.Warn("response truncated: hit max output tokens")
@@ -244,11 +290,17 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 				apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
 				apiclient.Message{Role: apiclient.RoleUser, Content: results},
 			)
+			// A truncated iteration consumed a model call: count it against the
+			// budget so a truncation ping-pong cannot loop forever.
+			toolTurns++
+			if toolTurns >= e.maxToolTurns {
+				return e.wrapUp(ctx, history, system, ch, wrapUpReasonBudget)
+			}
 			continue
 		}
 
 		// Execute all tool calls and collect results.
-		assistantContent, results, err := e.executeTools(ctx, turn.toolCalls, ch)
+		assistantContent, results, err := e.executeTools(ctx, turn.toolCalls, detect, ch)
 		if err != nil {
 			return history, err
 		}
@@ -267,7 +319,60 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 			apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
 			apiclient.Message{Role: apiclient.RoleUser, Content: results},
 		)
+
+		// Loop-hardening exits: a run that keeps getting vetoed, or one that has
+		// spent its tool budget, is wrapped up gracefully — never hard-aborted.
+		if detect.vetoCount() >= 2 {
+			return e.wrapUp(ctx, history, system, ch, wrapUpReasonLoop)
+		}
+		toolTurns++
+		if toolTurns >= e.maxToolTurns {
+			return e.wrapUp(ctx, history, system, ch, wrapUpReasonBudget)
+		}
 	}
+}
+
+// Reasons surfaced to the model in the forced wrap-up instruction.
+const (
+	wrapUpReasonBudget = "You have reached the maximum number of tool iterations for this request."
+	wrapUpReasonLoop   = "You appear to be stuck repeating tool calls without making progress."
+)
+
+// wrapUpNotice is the synthetic user-role instruction injected before the
+// final, tool-less turn of a forced wrap-up.
+func wrapUpNotice(reason string) string {
+	return "[system] " + reason + " Tools are disabled for your next reply. Summarize what you did and what you found, state anything you could not finish, and give your best final answer now — do not attempt further tool calls."
+}
+
+// wrapUp forces a graceful end of the run: it injects a wrap-up instruction
+// through the steering seam (so it merges into the trailing user message, e.g.
+// fresh tool results) and runs one final turn with tools stripped from the
+// request, recording the model's summary. Any tool call the model still
+// attempts is ignored — there are no tools on the request to honor it with.
+func (e *Engine) wrapUp(ctx context.Context, history []apiclient.Message, system string, ch chan<- Event, reason string) ([]apiclient.Message, error) {
+	slog.Warn("forcing graceful wrap-up", "reason", reason)
+	e.Enqueue(wrapUpNotice(reason))
+	history = e.drainSteering(history)
+
+	req := e.buildRequest(ctx, history, system)
+	req.Tools = nil // the model must answer in prose
+	turn, err := e.streamTurn(ctx, req, ch)
+	if err != nil {
+		return history, err
+	}
+	if e.usage != nil {
+		e.usage(req.Model, turn.usage)
+	}
+	if len(turn.toolCalls) > 0 {
+		slog.Warn("model attempted tool calls during forced wrap-up; ignored", "count", len(turn.toolCalls))
+	}
+	if turn.text != "" {
+		history = append(history, apiclient.Message{
+			Role:    apiclient.RoleAssistant,
+			Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: turn.text}},
+		})
+	}
+	return history, nil
 }
 
 // maybeCompact summarizes history before a turn when it has grown past the
@@ -357,16 +462,17 @@ func (e *Engine) failTruncatedCalls(calls []apiclient.ToolCallCompleteEvent, ch 
 	return assistantBlocks, resultBlocks
 }
 
-// executeTools runs each tool call, gating on permissions, and returns the
-// assistant content block list and user-side tool result content blocks.
-func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCompleteEvent, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock, error) {
+// executeTools runs each tool call, gating on permissions and the loop
+// detector, and returns the assistant content block list and user-side tool
+// result content blocks.
+func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCompleteEvent, detect *loopDetector, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock, error) {
 	assistantBlocks := make([]apiclient.ContentBlock, 0, len(calls))
 	resultBlocks := make([]apiclient.ContentBlock, 0, len(calls))
 
 	for _, call := range calls {
 		assistantBlocks = append(assistantBlocks, apiclient.ToolCallBlock(call))
 
-		result := e.dispatchTool(ctx, call, ch)
+		result := e.dispatchTool(ctx, call, detect, ch)
 		// Condense the model-facing copy only; the UI already got the full
 		// output via the ToolResultEvent sent inside dispatchTool.
 		content := result.Content
@@ -382,13 +488,29 @@ func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCom
 	return assistantBlocks, resultBlocks, nil
 }
 
-// dispatchTool looks up the tool, resolves permission through the permission
-// engine, and executes it if allowed. Every outcome (including denial and hook
-// blocks) is surfaced as a ToolResultEvent so the UI reflects what happened.
-func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallCompleteEvent, ch chan<- Event) tool.Result {
+// dispatchTool looks up the tool, pre-validates its input, consults the loop
+// detector, resolves permission through the permission engine, and executes it
+// if allowed. Every outcome (including denial, veto, and hook blocks) is
+// surfaced as a ToolResultEvent so the UI reflects what happened.
+func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallCompleteEvent, detect *loopDetector, ch chan<- Event) tool.Result {
 	t, ok := e.registry.Get(call.Name)
 	if !ok {
 		return e.blocked(ch, call.Name, fmt.Sprintf("unknown tool %q", call.Name))
+	}
+
+	// Schema pre-validation: garbage that cannot be a JSON object never reaches
+	// Execute. Tools keep their own explicit validation as defense-in-depth for
+	// well-formed-but-wrong input.
+	if !apiclient.ValidToolInput(call.Input) {
+		return e.blocked(ch, call.Name, fmt.Sprintf("tool call not executed: input for %q is not a valid JSON object; re-emit the call with a well-formed JSON body", call.Name))
+	}
+
+	// Loop detector: an identical no-progress call repeated a third time is
+	// vetoed before permissions, so the user is never prompted for a call the
+	// engine refuses to run.
+	if detect.check(call.Name, call.Input) {
+		slog.Warn("loop detector vetoed a repeated tool call", "tool", call.Name)
+		return e.blocked(ch, call.Name, loopVetoMessage(call.Name))
 	}
 
 	base := t.CheckPermission(ctx, call.Input, e.perm.Mode())
@@ -417,6 +539,15 @@ func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallComple
 	result, err := t.Execute(ctx, call.Input, e.deps)
 	if err != nil {
 		result = tool.Result{Content: err.Error(), IsError: true}
+	}
+
+	// Record the raw result with the loop detector (pre-notice, so the notice
+	// itself never perturbs the comparison); on the second identical
+	// no-progress call, append the corrective notice for the model — the UI
+	// sees it too via the ToolResultEvent below, which is intentional.
+	if detect.observe(call.Name, call.Input, result.Content) {
+		slog.Warn("loop detector warned on a repeated tool call", "tool", call.Name)
+		result.Content += loopWarnNotice
 	}
 
 	e.fireHook(ctx, HookPostToolUse, call.Name, call.Input)
