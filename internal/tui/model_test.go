@@ -173,6 +173,35 @@ func TestContextMeter(t *testing.T) {
 	}
 }
 
+// TestContextMeterEffectiveLimit checks that the meter divides by the wired
+// dynamic threshold (model-aware) instead of the static default, and that the
+// static prompt overhead is added to the history estimate.
+func TestContextMeterEffectiveLimit(t *testing.T) {
+	t.Parallel()
+
+	m := ready(fakeRunner{}).WithContextLimit(func() int { return 30_000 })
+	m.contextTokens = 15_000
+	want := m.styles.status.Render("ctx 50%")
+	if got := m.contextSegment(); got != want {
+		t.Errorf("contextSegment with 30k limit = %q, want %q", got, want)
+	}
+
+	// A non-positive dynamic limit falls back to the default threshold.
+	m = ready(fakeRunner{}).WithContextLimit(func() int { return 0 })
+	m.contextTokens = 60_000
+	want = m.styles.status.Render("ctx 50%")
+	if got := m.contextSegment(); got != want {
+		t.Errorf("contextSegment with zero limit = %q, want %q (default threshold)", got, want)
+	}
+
+	// The overhead is part of the estimate the meter shows: an empty session
+	// with wired overhead already reports its floor.
+	m = ready(fakeRunner{}).WithContextOverhead(12_000)
+	if got := m.contextSegment(); got != m.styles.status.Render("ctx 10%") {
+		t.Errorf("contextSegment with overhead only = %q, want ctx 10%%", got)
+	}
+}
+
 func TestErrorEventShown(t *testing.T) {
 	t.Parallel()
 	m := ready(fakeRunner{})

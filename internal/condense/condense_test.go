@@ -124,3 +124,37 @@ func TestApplyTruncationCountsAll(t *testing.T) {
 		t.Errorf("tail not preserved:\n%s", got)
 	}
 }
+
+// TestCondenseBypassesToolGate verifies the ungated entry point: a tool Apply
+// would spare (not in the configured set) is still reduced by Condense, while
+// the never-enlarge and nil-receiver contracts hold.
+func TestCondenseBypassesToolGate(t *testing.T) {
+	t.Parallel()
+
+	f := condense.New(condense.Config{MaxLines: 10, HeadLines: 3, TailLines: 3})
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("row-%d", i)
+	}
+	in := strings.Join(lines, "\n") + "\n"
+
+	if got := f.Apply("ReadFile", in); got != in {
+		t.Fatalf("Apply gate should spare ReadFile output")
+	}
+	got := f.Condense(in)
+	if len(got) >= len(in) {
+		t.Errorf("Condense did not shrink gated-tool output")
+	}
+	if !strings.Contains(got, "lines omitted") {
+		t.Errorf("missing omission marker:\n%s", got)
+	}
+
+	short := "tiny\n"
+	if got := f.Condense(short); got != short {
+		t.Errorf("Condense enlarged or changed already-small content: %q", got)
+	}
+	var nilF *condense.Filter
+	if got := nilF.Condense(in); got != in {
+		t.Error("nil filter must return content unchanged")
+	}
+}

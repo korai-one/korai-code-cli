@@ -104,6 +104,22 @@ func (f *Filter) Apply(toolName, content string) string {
 	return condensed
 }
 
+// Condense applies the reduction to content unconditionally — no tool-name
+// gate. It is the entry point for callers that already decided the content is
+// old enough to squeeze (the compaction middle tier), where the per-tool gate
+// of Apply would wrongly spare non-Bash output. Like Apply, it never enlarges:
+// if condensing does not shrink the content the original is returned.
+func (f *Filter) Condense(content string) string {
+	if f == nil || content == "" {
+		return content
+	}
+	condensed := f.condense(content)
+	if len(condensed) >= len(content) {
+		return content
+	}
+	return condensed
+}
+
 // condense applies dedup then truncation, preserving a trailing newline so the
 // model sees the same line-termination shape it otherwise would.
 func (f *Filter) condense(content string) string {
