@@ -1,0 +1,7 @@
+TEXT "Reading the file first."
+TOOL_START ReadFile {"path":"main.txt"}
+TOOL_RESULT ReadFile error=false "hello world\n"
+TOOL_START Edit {"path":"main.txt","old_string":"world","new_string":"korai"}
+TOOL_RESULT Edit error=false "replaced 1 occurrence(s) in <workdir>/main.txt"
+TEXT "Replaced world with korai."
+DONE

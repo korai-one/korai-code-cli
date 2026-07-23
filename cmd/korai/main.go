@@ -177,6 +177,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(loginCmd())
 	root.AddCommand(logoutCmd())
 	root.AddCommand(serveCmd())
+	root.AddCommand(evalCmd())
 	root.AddCommand(syncCmd())
 	root.AddCommand(teleportCmd())
 	root.AddCommand(nukeCmd())

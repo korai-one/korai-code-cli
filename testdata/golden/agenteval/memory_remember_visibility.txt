@@ -1,0 +1,4 @@
+TOOL_START Remember {"note":"the deploy password lives in the team vault","pinned":true}
+TOOL_RESULT Remember error=false "remembered"
+TEXT "Noted."
+DONE
