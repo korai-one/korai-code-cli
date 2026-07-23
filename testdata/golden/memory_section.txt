@@ -1,0 +1,15 @@
+# Memory
+
+## Faits
+- deploy-target: fly.io
+- editor: neovim
+- lang: français
+
+## Notes
+- legacy always-on note
+
+## Rappels
+- deploy needs the fly CLI installed [tags: deploy]
+- deploy rollbacks use fly releases and this pointer line is deliberately long enough to be clipped in the preview rendering [tags: ops]
+- deploy dashboards live in grafana
+- … autres notes : « deploy secrets come from the vault »

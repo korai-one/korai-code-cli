@@ -102,8 +102,9 @@ internal/
   engine/             # the agent loop: context → stream → tool loop → repeat.
                       #   UI-agnostic; emits events on <-chan engine.Event.
                       #   Options: WithHooks, WithModelSelector, WithUsageRecorder,
-                      #   WithSystemSuffix, WithAutoCompact, WithToolResultFilter.
-                      #   Enqueue() for mid-turn steering.
+                      #   WithSystemSuffix, WithSystemSection (per-request dynamic
+                      #   tail — the memory seam), WithAutoCompact,
+                      #   WithToolResultFilter. Enqueue() for mid-turn steering.
   apiclient/          # THE inference boundary (strangler fig). Own types; Client
                       #   interface; KoraiClient (buffered + fence dialect),
                       #   LocalWorkerClient (streams); ClientSelector; ModelSelector.
@@ -118,7 +119,9 @@ internal/
   skill/              # markdown skills → slash commands; bundled via go:embed.
   hook/               # config-driven lifecycle hooks (shell commands).
   mcp/                # MCP client; adapts external server tools onto tool.Tool.
-  memory/             # file-backed, capped persistent memory store.
+  memory/             # file-backed, capped persistent memory: facts (key/value,
+                      #   pinned or keyword-gated) + notes (lexical recall EN+FR),
+                      #   injected per request via engine.WithSystemSection.
   compact/            # conversation summarization via apiclient.Client.
   cost/               # token tracking + USD estimate. NOTE: prices.go still keys
                       #   on Anthropic-era model names; usage is recorded under the

@@ -40,6 +40,85 @@ func TestExecuteSuccess(t *testing.T) {
 	}
 }
 
+func TestExecuteFact(t *testing.T) {
+	t.Parallel()
+
+	st := store.NewStore(filepath.Join(t.TempDir(), "MEMORY.md"))
+	rt := memtool.New(st)
+	in, _ := json.Marshal(memtool.Input{Note: "neovim", Kind: "fact", Key: "editor"})
+
+	res, err := rt.Execute(context.Background(), in, tool.Deps{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", res.Content)
+	}
+
+	f, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(f.Facts) != 1 || f.Facts[0].Key != "editor" || f.Facts[0].Value != "neovim" {
+		t.Errorf("facts = %+v, want editor: neovim", f.Facts)
+	}
+
+	// A bare key (no kind) is enough to imply a fact, and setting the same
+	// key supersedes the value.
+	in, _ = json.Marshal(memtool.Input{Note: "helix", Key: "editor"})
+	if res, err = rt.Execute(context.Background(), in, tool.Deps{}); err != nil || res.IsError {
+		t.Fatalf("Execute supersede: %v / %s", err, res.Content)
+	}
+	f, _ = st.Load()
+	if len(f.Facts) != 1 || f.Facts[0].Value != "helix" {
+		t.Errorf("facts after supersede = %+v, want a single editor: helix", f.Facts)
+	}
+}
+
+func TestExecuteKindValidation(t *testing.T) {
+	t.Parallel()
+
+	st := store.NewStore(filepath.Join(t.TempDir(), "MEMORY.md"))
+	rt := memtool.New(st)
+
+	cases := []memtool.Input{
+		{Note: "v", Kind: "fact"},            // fact without key
+		{Note: "v", Kind: "note", Key: "k"},  // key on a note
+		{Note: "v", Kind: "banana", Key: ""}, // unknown kind
+	}
+	for _, in := range cases {
+		raw, _ := json.Marshal(in)
+		res, err := rt.Execute(context.Background(), raw, tool.Deps{})
+		if err != nil {
+			t.Fatalf("Execute(%+v): %v", in, err)
+		}
+		if !res.IsError {
+			t.Errorf("Execute(%+v) succeeded, want soft error", in)
+		}
+	}
+}
+
+func TestExecuteTurnCapSoftError(t *testing.T) {
+	t.Parallel()
+
+	st := store.NewStore(filepath.Join(t.TempDir(), "MEMORY.md"))
+	rt := memtool.New(st)
+	for i := 0; i < store.MaxNoteWritesPerTurn; i++ {
+		raw, _ := json.Marshal(memtool.Input{Note: "note " + string(rune('a'+i))})
+		if res, err := rt.Execute(context.Background(), raw, tool.Deps{}); err != nil || res.IsError {
+			t.Fatalf("Execute %d: %v / %s", i, err, res.Content)
+		}
+	}
+	raw, _ := json.Marshal(memtool.Input{Note: "one too many"})
+	res, err := rt.Execute(context.Background(), raw, tool.Deps{})
+	if err != nil {
+		t.Fatalf("Execute over cap: %v", err)
+	}
+	if !res.IsError || !strings.Contains(res.Content, "cap") {
+		t.Errorf("over-cap result = %+v, want soft cap error", res)
+	}
+}
+
 func TestExecuteEmptyNote(t *testing.T) {
 	t.Parallel()
 
