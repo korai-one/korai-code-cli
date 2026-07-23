@@ -225,6 +225,7 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithSystemSection(sess.memSection),
 		engine.WithToolResultFilter(sess.condense),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 	// Continue from any resumed history, then add this prompt.
@@ -300,6 +301,7 @@ func runTUI(ctx context.Context, opts runOptions) error {
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithSystemSection(sess.memSection),
 		engine.WithToolResultFilter(sess.condense),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
 

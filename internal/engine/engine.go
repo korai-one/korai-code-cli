@@ -41,6 +41,7 @@ type Engine struct {
 	models       *apiclient.ModelSelector
 	usage        UsageRecorder
 	sysSuffix    func() string
+	sysSection   func(latestUserText string) string
 	filter       ToolResultFilter
 	compactFn    CompactFunc
 	compactMax   int
@@ -139,6 +140,18 @@ func WithUsageRecorder(r UsageRecorder) Option {
 // return adds nothing.
 func WithSystemSuffix(fn func() string) Option {
 	return func(e *Engine) { e.sysSuffix = fn }
+}
+
+// WithSystemSection attaches a function whose return value is appended at the
+// very END of the system prompt (after any WithSystemSuffix text) on every
+// request. Unlike the suffix it receives the latest genuine user text, so it
+// can tailor its content to the turn — the seam the memory fabric plugs into.
+// It is re-evaluated on every model call within a turn, so state recorded
+// mid-turn (e.g. a Remember write during the tool loop) is visible on the very
+// next request. Injecting at the end keeps the byte-stable system-prompt
+// prefix intact for backend KV-cache reuse. An empty return adds nothing.
+func WithSystemSection(fn func(latestUserText string) string) Option {
+	return func(e *Engine) { e.sysSection = fn }
 }
 
 // WithToolResultFilter attaches a filter applied to every tool result before it
@@ -597,11 +610,7 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 			InputSchema: raw,
 		})
 	}
-	if e.sysSuffix != nil {
-		if suffix := e.sysSuffix(); suffix != "" {
-			system += "\n\n" + suffix
-		}
-	}
+	system = e.composeSystem(history, system)
 	req := apiclient.Request{
 		System:   system,
 		Messages: history,
@@ -612,6 +621,45 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 		req.Model = e.models.Get()
 	}
 	return req
+}
+
+// composeSystem assembles the effective system prompt for a request: the
+// caller's system, then the per-turn suffix, then the per-turn dynamic section
+// (memory) — in that order, so the stable prefix stays byte-identical across
+// requests and only the tail varies.
+func (e *Engine) composeSystem(history []apiclient.Message, system string) string {
+	if e.sysSuffix != nil {
+		if suffix := e.sysSuffix(); suffix != "" {
+			system += "\n\n" + suffix
+		}
+	}
+	if e.sysSection != nil {
+		if section := e.sysSection(latestUserText(history)); section != "" {
+			system += "\n\n" + section
+		}
+	}
+	return system
+}
+
+// latestUserText returns the text of the most recent user message that carries
+// genuine typed text (a TextBlock) — skipping trailing tool-result-only user
+// messages — so per-turn providers can key off what the user actually said.
+func latestUserText(history []apiclient.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != apiclient.RoleUser {
+			continue
+		}
+		var parts []string
+		for _, b := range history[i].Content {
+			if tb, ok := b.(apiclient.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
+				parts = append(parts, tb.Text)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	return ""
 }
 
 func send(ch chan<- Event, e Event) {

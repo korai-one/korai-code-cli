@@ -267,6 +267,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	eng := engine.New(s.sess.client, s.sess.registry, permEngine, s.sess.deps,
 		engine.WithHooks(s.sess.hooks), engine.WithModelSelector(s.sess.models),
 		engine.WithUsageRecorder(s.sess.cost.Add), engine.WithSystemSuffix(planSuffix(s.sess.modes)),
+		engine.WithSystemSection(s.sess.memSection),
 		engine.WithToolResultFilter(s.sess.condense),
 		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, s.sess.compactor))
 
