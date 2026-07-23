@@ -98,3 +98,56 @@ func TestOpenPayloadRoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestSamplingExtendedRoundTrip verifies the extended sampling fields keep
+// pointer semantics across the wire: absent stays absent, a deliberate zero
+// survives, and the JSON names match the worker repo's hostproto mirror.
+func TestSamplingExtendedRoundTrip(t *testing.T) {
+	seed := 0
+	topK := 40
+	minP := 0.05
+	rp := 1.1
+	want := Sampling{
+		MaxTokens:      128,
+		Grammar:        `root ::= "yes"`,
+		JSONSchema:     json.RawMessage(`{"type":"object"}`),
+		Seed:           &seed,
+		TopK:           &topK,
+		MinP:           &minP,
+		RepeatPenalty:  &rp,
+		ConstrainTools: true,
+		// FrequencyPenalty / PresencePenalty deliberately absent.
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The wire names are a cross-repo contract with hostproto.Sampling.
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	for _, key := range []string{"grammar", "json_schema", "seed", "top_k", "min_p", "repeat_penalty", "constrain_tools"} {
+		if _, ok := wire[key]; !ok {
+			t.Errorf("wire missing %q: %s", key, raw)
+		}
+	}
+	if seedVal, ok := wire["seed"].(float64); !ok || seedVal != 0 {
+		t.Errorf("seed = %v, want explicit 0 on the wire", wire["seed"])
+	}
+	for _, key := range []string{"frequency_penalty", "presence_penalty", "temperature", "top_p", "stop"} {
+		if _, ok := wire[key]; ok {
+			t.Errorf("absent field %q must be omitted from the wire: %s", key, raw)
+		}
+	}
+	var got Sampling
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
+	}
+	if got.FrequencyPenalty != nil || got.PresencePenalty != nil {
+		t.Error("absent pointers must stay nil after round-trip")
+	}
+}

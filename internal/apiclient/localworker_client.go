@@ -161,9 +161,39 @@ func (c *LocalWorkerClient) sendTurn(req Request) error {
 		System:    req.System,
 		Tools:     convertToProtoTools(req.Tools),
 		Messages:  msgs,
-		Sampling:  localproto.Sampling{MaxTokens: int(req.MaxTokens)},
+		Sampling:  convertToProtoSampling(req),
 	}
 	return c.writeJSON(localproto.FrameOpen, open)
+}
+
+// convertToProtoSampling maps a request's sampling and constrained-decoding
+// parameters onto the wire form. The pointer fields forward as-is (nil =
+// absent, deliberate zero survives). Temperature/TopP ride non-pointer
+// omitempty wire fields, so an explicit zero degrades to "worker default" —
+// the same wire limitation as the worker repo's hostproto. ConstrainTools is
+// forwarded rather than resolved here: the worker generates the fence grammar
+// itself from the turn's ToolDefs (its generator is authoritative for its own
+// engine), unless an explicit Grammar/JSONSchema is present, which wins.
+func convertToProtoSampling(req Request) localproto.Sampling {
+	s := localproto.Sampling{
+		MaxTokens:        int(req.MaxTokens),
+		Grammar:          req.Grammar,
+		JSONSchema:       req.JSONSchema,
+		Seed:             req.Sampling.Seed,
+		TopK:             req.Sampling.TopK,
+		MinP:             req.Sampling.MinP,
+		RepeatPenalty:    req.Sampling.RepeatPenalty,
+		FrequencyPenalty: req.Sampling.FrequencyPenalty,
+		PresencePenalty:  req.Sampling.PresencePenalty,
+		ConstrainTools:   req.ConstrainTools,
+	}
+	if req.Sampling.Temperature != nil {
+		s.Temperature = *req.Sampling.Temperature
+	}
+	if req.Sampling.TopP != nil {
+		s.TopP = *req.Sampling.TopP
+	}
+	return s
 }
 
 // pump reads frames until a terminal Done/Error (or a broken connection) and

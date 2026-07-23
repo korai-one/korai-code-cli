@@ -46,6 +46,7 @@ type Engine struct {
 	compactMax   int
 	estimate     func([]apiclient.Message) int
 	maxToolTurns int
+	sampling     apiclient.Sampling
 
 	// steerMu guards steer: user text injected mid-turn (see Enqueue), drained
 	// into history at the top of each tool-loop iteration.
@@ -160,6 +161,14 @@ func WithMaxToolTurns(n int) Option {
 	}
 }
 
+// WithSamplingDefaults sets default sampling parameters stamped on every
+// request the engine builds (the seam an eval harness uses to pin seed /
+// temperature for reproducible runs). The zero value — all pointers nil —
+// leaves every decision to the backend, which is the default.
+func WithSamplingDefaults(s apiclient.Sampling) Option {
+	return func(e *Engine) { e.sampling = s }
+}
+
 // WithAutoCompact enables automatic compaction: before a turn, if the history's
 // estimated token count exceeds maxTokens, fn is called to summarize it. A nil
 // fn or non-positive maxTokens disables auto-compaction.
@@ -225,11 +234,20 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	detect := newLoopDetector()
 	toolTurns := 0
 	fenceRetried := false
+	constrainNext := false
 
 	for {
 		// Fold in any text the user typed mid-turn before building the request.
 		history = e.drainSteering(history)
 		req := e.buildRequest(ctx, history, system)
+		if constrainNext {
+			// Malformed-fence retry turn: opt into grammar-enforced tool fences
+			// on backends that support constrained decoding, so the retried call
+			// is syntactically incapable of the same mistake. One turn only —
+			// a fence grammar forces a tool call and would strangle prose.
+			req.ConstrainTools = true
+			constrainNext = false
+		}
 		turn, err := e.streamTurn(ctx, req, ch)
 		if err != nil {
 			return history, err
@@ -255,6 +273,7 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 					Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: apiclient.RenderAssistantTurnText(turn.text, turn.toolCalls)}},
 				})
 				e.Enqueue(apiclient.FenceCorrectionNotice(frags))
+				constrainNext = true
 				continue
 			}
 		}
@@ -587,6 +606,7 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 		System:   system,
 		Messages: history,
 		Tools:    toolDefs,
+		Sampling: e.sampling,
 	}
 	if e.models != nil {
 		req.Model = e.models.Get()

@@ -357,6 +357,49 @@ func TestMalformedFenceRetryInvalidJSON(t *testing.T) {
 	if notice := lastUserText(reqs[1]); !strings.Contains(notice, "malformed tool call") {
 		t.Errorf("retry request missing the corrective notice: %q", notice)
 	}
+	// The retry turn — and only the retry turn — opts into grammar-enforced
+	// tool fences.
+	if reqs[0].ConstrainTools {
+		t.Error("first request must not be constrained")
+	}
+	if !reqs[1].ConstrainTools {
+		t.Error("malformed-fence retry request must set ConstrainTools")
+	}
+	if reqs[2].ConstrainTools {
+		t.Error("post-retry request must not be constrained")
+	}
+}
+
+// TestSamplingDefaultsStamped verifies WithSamplingDefaults puts the
+// configured sampling on every request the engine builds.
+func TestSamplingDefaultsStamped(t *testing.T) {
+	t.Parallel()
+
+	client := &scriptClient{script: func(int, apiclient.Request) []apiclient.Event {
+		return textTurn("ok")
+	}}
+	seed := 7
+	temp := 0.0
+	eng := bypassEngine(t, client, tool.NewRegistry(),
+		engine.WithSamplingDefaults(apiclient.Sampling{Seed: &seed, Temperature: &temp}))
+
+	for evt := range eng.Run(context.Background(), userTurn("hi"), "") {
+		if v, ok := evt.(engine.ErrorEvent); ok {
+			t.Fatalf("engine error: %v", v.Err)
+		}
+	}
+
+	reqs := client.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	s := reqs[0].Sampling
+	if s.Seed == nil || *s.Seed != 7 {
+		t.Errorf("seed = %v, want 7", s.Seed)
+	}
+	if s.Temperature == nil || *s.Temperature != 0.0 {
+		t.Errorf("temperature = %v, want explicit 0", s.Temperature)
+	}
 }
 
 // TestMalformedFenceSecondFailureDegrades verifies the retry is one-shot: a
