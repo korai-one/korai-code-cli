@@ -476,7 +476,18 @@ func openSyncedStore(ctx context.Context, home string, fs synchub.FileSettings) 
 	// Sessions persist to SQLite in the shared SDK's canonical korai.Session
 	// format (teleport-compatible); if the database cannot be opened, fall back
 	// to the JSONL file store so a storage error never blocks a session.
-	sq, serr := sdksession.NewSQLiteStore(ctx, sessionsDBPath(home))
+	//
+	// Migrate first: the SDK's schema is CREATE TABLE IF NOT EXISTS, which is a
+	// no-op against a database from an older SDK and leaves it short a column,
+	// so every save fails. A migration failure is not fatal — the open below
+	// has its own fallback.
+	dbPath := sessionsDBPath(home)
+	if added, merr := session.MigrateSQLite(ctx, dbPath); merr != nil {
+		slog.Warn("migrating sqlite session store", "error", merr)
+	} else if len(added) > 0 {
+		slog.Info("migrated sqlite session store", "added_columns", added)
+	}
+	sq, serr := sdksession.NewSQLiteStore(ctx, dbPath)
 	if serr == nil {
 		if syncCodec != nil {
 			sq.WithCodec(syncCodec)
