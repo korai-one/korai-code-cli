@@ -3,6 +3,7 @@ package apiclient
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -75,23 +76,33 @@ func findFenceClose(s string) (idx, length int) {
 // fence model how to call the given tools. It returns "" when there are no
 // tools. The body of each call must be a JSON object matching the tool's input
 // schema, so the parsed fence body can be handed straight to the tool.
+//
+// Arguments are rendered as a compact signature (renderSchema) rather than raw
+// JSON Schema. This block is the single largest fixed cost in the system prompt
+// — it is re-sent on every request, ahead of the user's first word — and the
+// schema JSON was more than a third of it while being mostly punctuation and
+// boilerplate ("additionalProperties":false on every object, a "type":"object"
+// wrapper the fence format already implies). The model needs each argument's
+// name, type, whether it is required, and what it means; it is not validating
+// documents. KEEP THIS IN LOCKSTEP with the worker's own renderer
+// (korai internal/inference/localsock/fence.go) — the direct binary channel
+// renders the block worker-side, so a change here alone would leave the two
+// transports teaching the model different dialects.
 func renderToolInstructions(tools []ToolDef) string {
 	if len(tools) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("# Tools\n\n")
-	b.WriteString("You can use tools. To call one, emit a fenced block EXACTLY in this ")
-	b.WriteString("format, where the body is a single JSON object matching the tool's ")
-	b.WriteString("input schema:\n\n")
+	b.WriteString("# Tools\n\nCall a tool by emitting exactly:\n\n")
 	b.WriteString(fenceOpenPrefix)
 	b.WriteString("tool_name>{\"param\": \"value\"}")
 	b.WriteString(fenceClose)
-	b.WriteString("\n\nRules:\n")
-	b.WriteString("- Emit the block exactly; the body must be valid JSON (use {} for no arguments).\n")
+	b.WriteString("\n\n")
+	b.WriteString("- The body is one JSON object; use {} when a tool takes no arguments.\n")
 	b.WriteString("- You may call several tools in one reply.\n")
-	b.WriteString("- After each call you receive a [TOOL RESULT: name] message. Never invent results.\n")
-	b.WriteString("- Inspect real files with tools before answering; do not guess their contents.\n\n")
+	b.WriteString("- Each call returns a [TOOL RESULT: name] message. Never invent results.\n")
+	b.WriteString("- Inspect real files with tools before answering; never guess their contents.\n")
+	b.WriteString("- Args read as name:type — meaning. * marks required; omit the rest.\n\n")
 	b.WriteString("Available tools:\n")
 	for _, t := range tools {
 		b.WriteString("\n## ")
@@ -101,9 +112,9 @@ func renderToolInstructions(tools []ToolDef) string {
 			b.WriteString(t.Description)
 			b.WriteByte('\n')
 		}
-		if schema := compactJSON(t.InputSchema); schema != "" && schema != "null" {
-			b.WriteString("Input schema: ")
-			b.WriteString(schema)
+		if args := renderSchema(t.InputSchema); args != "" {
+			b.WriteString("Args: ")
+			b.WriteString(args)
 			b.WriteByte('\n')
 		}
 	}
@@ -197,17 +208,137 @@ func fenceBodyToInput(body string) json.RawMessage {
 	return json.RawMessage(trimmed)
 }
 
-// compactJSON removes insignificant whitespace from a JSON document so a schema
-// renders on one line in the prompt. Invalid or empty input is returned
-// trimmed, unchanged.
-func compactJSON(raw json.RawMessage) string {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
+// schemaNode is the subset of JSON Schema the compact renderer understands:
+// enough to state each argument's name, type, requiredness, and meaning.
+// Anything else in the document (additionalProperties, $schema, title, …) is
+// deliberately dropped — it costs prompt tokens and tells a calling model
+// nothing it can act on.
+type schemaNode struct {
+	Type        string          `json:"type"`
+	Description string          `json:"description"`
+	Properties  json.RawMessage `json:"properties"`
+	Required    []string        `json:"required"`
+	Items       *schemaNode     `json:"items"`
+	Enum        []any           `json:"enum"`
+}
+
+// renderSchema renders a tool's input schema as a compact argument signature —
+// `name*:type — meaning` clauses joined by "; " — or "" when the schema has no
+// properties (a no-argument tool, where the old rendering still spent 60-odd
+// bytes saying so). See renderToolInstructions for why this is not raw JSON
+// Schema.
+func renderSchema(raw json.RawMessage) string {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return ""
 	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, []byte(trimmed)); err != nil {
-		return trimmed
+	var n schemaNode
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return ""
 	}
-	return buf.String()
+	return n.fields()
+}
+
+// fields renders a node's properties in schema order. Order is preserved
+// because it mirrors the tool's Input struct, which reads far better than the
+// shuffle encoding/json would give us from a map.
+func (n *schemaNode) fields() string {
+	keys := orderedKeys(n.Properties)
+	if len(keys) == 0 {
+		return ""
+	}
+	var props map[string]*schemaNode
+	if err := json.Unmarshal(n.Properties, &props); err != nil {
+		return ""
+	}
+	required := make(map[string]bool, len(n.Required))
+	for _, r := range n.Required {
+		required[r] = true
+	}
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		p := props[k]
+		if p == nil {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString(k)
+		if required[k] {
+			b.WriteByte('*')
+		}
+		b.WriteByte(':')
+		b.WriteString(p.compactType())
+		// Clauses are joined by "; ", so a description that ends in a period
+		// would render as ".; " — drop it.
+		if d := strings.TrimRight(strings.TrimSpace(p.Description), "."); d != "" {
+			b.WriteString(" — ")
+			b.WriteString(d)
+		}
+		parts = append(parts, b.String())
+	}
+	return strings.Join(parts, "; ")
+}
+
+// compactType renders a node's type in the signature's short vocabulary:
+// string/int/bool/number, T[] for arrays, {…} for nested objects, and an
+// inline "one of" list for enums.
+func (n *schemaNode) compactType() string {
+	var t string
+	switch n.Type {
+	case "integer":
+		t = "int"
+	case "boolean":
+		t = "bool"
+	case "array":
+		if n.Items == nil {
+			return "array"
+		}
+		t = n.Items.compactType() + "[]"
+	case "object":
+		if f := n.fields(); f != "" {
+			return "{" + f + "}"
+		}
+		t = "object"
+	case "":
+		t = "any"
+	default:
+		t = n.Type
+	}
+	if len(n.Enum) > 0 {
+		vals := make([]string, 0, len(n.Enum))
+		for _, e := range n.Enum {
+			vals = append(vals, fmt.Sprint(e))
+		}
+		t += "(" + strings.Join(vals, "|") + ")"
+	}
+	return t
+}
+
+// orderedKeys returns the keys of a JSON object in document order.
+// encoding/json decodes objects into unordered maps, so the order has to be
+// recovered from the raw bytes with a token scan.
+func orderedKeys(raw json.RawMessage) []string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil { // opening '{'
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return keys
+		}
+		k, ok := t.(string)
+		if !ok {
+			return keys
+		}
+		keys = append(keys, k)
+		var discard json.RawMessage
+		if err := dec.Decode(&discard); err != nil {
+			return keys
+		}
+	}
+	return keys
 }

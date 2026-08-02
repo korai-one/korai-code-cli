@@ -26,9 +26,9 @@ const defaultTimeout = 120000 * time.Millisecond
 // Input is the structured input for the Bash tool.
 type Input struct {
 	// Command is the shell command to run. Required.
-	Command string `json:"command" jsonschema:"required,description=The shell command to run"`
+	Command string `json:"command" jsonschema:"required"`
 	// TimeoutMS is the timeout in milliseconds. Optional; defaults to 120000.
-	TimeoutMS int `json:"timeout_ms,omitempty" jsonschema:"description=timeout in milliseconds, default 120000"`
+	TimeoutMS int `json:"timeout_ms,omitempty" jsonschema:"description=milliseconds (default 120000)"`
 }
 
 // Tool implements tool.Tool for running shell commands.
@@ -42,7 +42,7 @@ func (t *Tool) Name() string { return "Bash" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Run a shell command and return its combined stdout and stderr output."
+	return "Run a shell command and return its combined stdout and stderr."
 }
 
 // InputSchema returns the JSON schema for Bash's input struct.

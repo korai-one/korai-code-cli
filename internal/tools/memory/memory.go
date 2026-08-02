@@ -24,17 +24,17 @@ import (
 // an optional refinement, so existing callers keep working unchanged.
 type Input struct {
 	// Note is the text to remember (for kind=fact it is the fact's value).
-	Note string `json:"note" jsonschema:"required,description=The text to remember. For kind=fact this is the fact's value."`
+	Note string `json:"note" jsonschema:"required,description=the text to remember — for kind=fact its value"`
 	// Kind selects the entry type: "note" (default) or "fact".
-	Kind string `json:"kind,omitempty" jsonschema:"description=Entry type: 'note' (default; free text recalled by relevance) or 'fact' (a key/value entry; requires key)."`
+	Kind string `json:"kind,omitempty" jsonschema:"enum=note,enum=fact,description=default note — fact requires key"`
 	// Key is the fact's key; setting an existing key replaces its value.
-	Key string `json:"key,omitempty" jsonschema:"description=Fact key (kind=fact). Setting an existing key replaces its value."`
+	Key string `json:"key,omitempty" jsonschema:"description=fact key — setting an existing one replaces its value"`
 	// Pinned forces the entry into every future prompt.
-	Pinned bool `json:"pinned,omitempty" jsonschema:"description=Always inject this entry into context instead of gating it by relevance. Use sparingly."`
+	Pinned bool `json:"pinned,omitempty" jsonschema:"description=always inject instead of gating by relevance — use sparingly"`
 	// Keywords gate an unpinned fact: it is injected only when one matches.
-	Keywords []string `json:"keywords,omitempty" jsonschema:"description=For facts: inject the fact only when the user's message contains one of these words."`
+	Keywords []string `json:"keywords,omitempty" jsonschema:"description=facts: inject only when the user's message contains one"`
 	// Tags label a note to boost recall on related topics.
-	Tags []string `json:"tags,omitempty" jsonschema:"description=For notes: topic tags that boost recall relevance."`
+	Tags []string `json:"tags,omitempty" jsonschema:"description=notes: topic tags that boost recall"`
 }
 
 // Tool implements tool.Tool for saving entries to persistent memory.
@@ -52,9 +52,9 @@ func (t *Tool) Name() string { return "Remember" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Saves a short note or fact to persistent memory so it can be recalled in future sessions. " +
-		"Plain notes resurface when relevant to the conversation; facts (kind=fact with a key) are stable " +
-		"key/value entries — pinned or keyword-gated. Writes are capped per turn, so record only what matters."
+	return "Save a note or fact to persistent memory for future sessions. Notes " +
+		"resurface when relevant; facts are stable key/value entries, pinned or " +
+		"keyword-gated. Writes are capped per turn — record only what matters."
 }
 
 // InputSchema returns the JSON schema for Remember's input struct.

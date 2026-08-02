@@ -26,9 +26,9 @@ const lspDiagnosticsTimeout = 5 * time.Second
 // Input is the structured input for the Write tool.
 type Input struct {
 	// Path is the path to the file to write, relative to the working directory.
-	Path string `json:"path" jsonschema:"required,description=Path to the file to write, relative to the working directory"`
+	Path string `json:"path" jsonschema:"required,description=relative to the working directory"`
 	// Content is the full contents to write to the file.
-	Content string `json:"content" jsonschema:"required,description=The full contents to write"`
+	Content string `json:"content" jsonschema:"required,description=the full contents to write"`
 }
 
 // Tool implements tool.Tool for writing files.
@@ -42,7 +42,7 @@ func (t *Tool) Name() string { return "Write" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Write content to a file at the given path, creating it (and any missing parent directories) or overwriting it if it already exists."
+	return "Write a file, creating any missing parent directories or overwriting an existing file."
 }
 
 // InputSchema returns the JSON schema for Write's input struct.

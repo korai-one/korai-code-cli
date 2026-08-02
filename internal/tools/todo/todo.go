@@ -24,18 +24,20 @@ import (
 // complete list on every call; the tool replaces the existing list with it.
 type Input struct {
 	// Todos is the full task list to store, replacing any previous list.
-	Todos []Entry `json:"todos" jsonschema:"required,description=The complete task list, replacing the previous list. Pass every task on each call."`
+	Todos []Entry `json:"todos" jsonschema:"required,description=the complete list — every task on every call"`
 }
 
 // Entry is one task in the TodoWrite input.
 type Entry struct {
 	// Content is the task description in imperative form (e.g. "Run tests").
-	Content string `json:"content" jsonschema:"required,description=The task description"`
-	// Status is one of pending, in_progress, or completed.
-	Status string `json:"status" jsonschema:"required,description=Task status: one of pending, in_progress, completed"`
+	Content string `json:"content" jsonschema:"required,description=imperative task description"`
+	// Status is one of pending, in_progress, or completed. Declared as an enum
+	// rather than prose: the renderer prints it as status*:string(a|b|c), which
+	// is both shorter and stricter than spelling the options out.
+	Status string `json:"status" jsonschema:"required,enum=pending,enum=in_progress,enum=completed"`
 	// ActiveForm is the present-continuous label shown while in progress
 	// (e.g. "Running tests").
-	ActiveForm string `json:"active_form,omitempty" jsonschema:"description=Present-continuous label shown while the task is in progress, e.g. Running tests"`
+	ActiveForm string `json:"active_form,omitempty" jsonschema:"description=present-continuous label shown while in progress (e.g. Running tests)"`
 }
 
 // Tool implements tool.Tool for updating the session todo list.
@@ -53,10 +55,9 @@ func (t *Tool) Name() string { return "TodoWrite" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Tracks a task list for multi-step work. Pass the full list on every " +
-		"call; this replaces the previous list. Each task has a status of " +
-		"pending, in_progress, or completed. Keep exactly one task in_progress " +
-		"at a time, and mark a task completed as soon as it is done."
+	return "Track a task list for multi-step work. Each call replaces the whole " +
+		"list. Keep exactly one task in_progress, and mark it completed as soon " +
+		"as it is done."
 }
 
 // InputSchema returns the JSON schema for TodoWrite's input struct.

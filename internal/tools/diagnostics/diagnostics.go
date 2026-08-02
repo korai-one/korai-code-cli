@@ -31,7 +31,7 @@ type Diagnoser interface {
 // Input is the structured input for the lsp_diagnostics tool.
 type Input struct {
 	// Path is the file to diagnose, relative to the working directory.
-	Path string `json:"path" jsonschema:"required,description=Path to the file to get language-server diagnostics for"`
+	Path string `json:"path" jsonschema:"required"`
 }
 
 // Tool implements tool.Tool for on-demand language-server diagnostics.
@@ -47,8 +47,8 @@ func (t *Tool) Name() string { return "lsp_diagnostics" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Report language-server diagnostics (errors, warnings) for a file without editing it. " +
-		"Useful to check a file's health or confirm a fix. Requires a language server for the file's type to be installed."
+	return "Report language-server diagnostics (errors and warnings) for a file " +
+		"without editing it. Requires a language server for the file's type."
 }
 
 // InputSchema returns the JSON schema for the tool's input struct.

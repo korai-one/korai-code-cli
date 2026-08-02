@@ -31,11 +31,11 @@ type Referencer interface {
 // Input is the structured input for the lsp_references tool.
 type Input struct {
 	// Path is the file containing the symbol, relative to the working directory.
-	Path string `json:"path" jsonschema:"required,description=Path to the file containing the symbol"`
+	Path string `json:"path" jsonschema:"required,description=file containing the symbol"`
 	// Line is the 1-based line of the symbol.
-	Line int `json:"line" jsonschema:"required,description=1-based line number of the symbol"`
+	Line int `json:"line" jsonschema:"required,description=1-based"`
 	// Column is the 1-based column of the symbol; defaults to 1 when omitted.
-	Column int `json:"column,omitempty" jsonschema:"description=1-based column of the symbol (default 1)"`
+	Column int `json:"column,omitempty" jsonschema:"description=1-based (default 1)"`
 	// IncludeDeclaration also returns the symbol's own declaration.
 	IncludeDeclaration bool `json:"include_declaration,omitempty" jsonschema:"description=also include the declaration site"`
 }
@@ -53,8 +53,8 @@ func (t *Tool) Name() string { return "lsp_references" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "List every reference to the symbol at a given file position (line/column) using the language server. " +
-		"Use it to gauge the impact of changing or removing a symbol. Requires a language server for the file's type."
+	return "List every reference to the symbol at a file position, via the language " +
+		"server. Use it to gauge the impact of changing or removing a symbol."
 }
 
 // InputSchema returns the JSON schema for the tool's input struct.
