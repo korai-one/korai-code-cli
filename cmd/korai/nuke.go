@@ -112,7 +112,7 @@ func performNuke(ctx context.Context, home, projectDir string) synckey.WipeRepor
 	key, _, _ := synckey.Load(home) // may be nil already; Wipe tolerates it
 
 	var remotePurge func(context.Context) error
-	if url := resolveHubURL(home); url != "" && len(key) == synckey.KeyLen {
+	if url := resolveHubURL(ctx, home); url != "" && len(key) == synckey.KeyLen {
 		// Sign the purge with K_folder (v0.4.0): PostNuke posts the cryptographically
 		// verifiable fleet-wide nuke marker AND soft-deletes the namespace hub-side in
 		// one transaction, so every other device self-destructs on its next pull
@@ -127,11 +127,16 @@ func performNuke(ctx context.Context, home, projectDir string) synckey.WipeRepor
 // resolveHubURL finds the hub base URL from the env or the user settings block,
 // so the remote purge can target the right namespace. Empty means skip the
 // remote step (the crypto-shred still protects the data).
-func resolveHubURL(home string) string {
+//
+// ctx is threaded through to LoadContext rather than dropped on the floor:
+// settings values may contain $(command) substitutions, and LoadContext is what
+// bounds and cancels those. Without it a hung substitution would ignore the
+// cancellation of a nuke the user is trying to abort.
+func resolveHubURL(ctx context.Context, home string) string {
 	if v := strings.TrimSpace(os.Getenv("KORAI_SYNC_URL")); v != "" {
 		return v
 	}
-	settings, err := config.DefaultPaths(home, home).Load()
+	settings, err := config.DefaultPaths(home, home).LoadContext(ctx)
 	if err != nil || settings.Sync == nil {
 		return ""
 	}

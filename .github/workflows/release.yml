@@ -70,12 +70,26 @@ jobs:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: version
     strategy:
-      fail-fast: true
+      # false so one broken platform reports alongside the others instead of
+      # masking them. A partial release stays impossible regardless: `publish`
+      # needs this whole job, and fail_on_unmatched_files guards the asset list.
+      fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, goos: linux, goarch: amd64, ext: "" }
-          - { os: macos-latest, goos: darwin, goarch: arm64, ext: "" }
-          - { os: windows-latest, goos: windows, goarch: amd64, ext: ".exe" }
+          - { os: ubuntu-latest, goos: linux, goarch: amd64, ext: "", cc: "" }
+          # Native arm64 runner. cgo needs a real toolchain for the target, and
+          # the alternative — cross-gcc on an x64 runner — means installing and
+          # configuring aarch64-linux-gnu-gcc for the tree-sitter C tree.
+          - { os: ubuntu-24.04-arm, goos: linux, goarch: arm64, ext: "", cc: "" }
+          - { os: macos-latest, goos: darwin, goarch: arm64, ext: "", cc: "" }
+          # macos-latest is Apple Silicon, so darwin/amd64 is a CROSS build.
+          # Apple's clang targets x86_64 via -arch — the same mechanism
+          # universal binaries use — so no extra toolchain is needed. But CC
+          # must say so explicitly, or cgo compiles arm64 objects and the link
+          # fails on architecture mismatch. Pinning an Intel runner instead
+          # would tie the build to a label GitHub keeps deprecating.
+          - { os: macos-latest, goos: darwin, goarch: amd64, ext: "", cc: "clang -arch x86_64" }
+          - { os: windows-latest, goos: windows, goarch: amd64, ext: ".exe", cc: "" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -86,19 +100,33 @@ jobs:
           cache: true
 
       - name: Build binary
-        # cgo on, built natively (runner OS/arch == target), so the bundled C
-        # tree-sitter grammars compile and link with the platform's own toolchain
-        # (gcc on the linux/windows images, clang on macOS) — no cross toolchain.
+        # cgo on, so the bundled C tree-sitter grammars compile and link with a
+        # real toolchain (gcc on the linux/windows images, clang on macOS).
+        # Every arm is native except darwin/amd64, which cross-compiles from the
+        # Apple Silicon runner via matrix.cc — see the matrix comments.
         shell: bash
         env:
           CGO_ENABLED: "1"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          MATRIX_CC: ${{ matrix.cc }}
         run: |
+          set -euo pipefail
+          # Only export CC when the matrix asks for one. Exporting an empty CC
+          # would have cgo try to invoke "" instead of falling back to the
+          # platform default.
+          if [ -n "${MATRIX_CC}" ]; then
+            export CC="${MATRIX_CC}"
+            echo "cross-compiling with CC=${CC}"
+          fi
           v="${{ needs.version.outputs.version }}"
           out="korai-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
           go build -trimpath -ldflags "-s -w -X main.version=${v}" -o "${out}" ./cmd/korai
           go version
+          # Prove the artifact is actually for the target architecture rather
+          # than a silently-native build — the failure mode this guards against
+          # produces a working binary for the WRONG machine.
+          file "${out}" || true
           echo "built ${out}"
 
       - uses: actions/upload-artifact@v4
@@ -137,10 +165,17 @@ jobs:
           make_latest: true # so releases/latest/download/<asset> serves this
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # Listed explicitly (not globbed) with fail_on_unmatched_files above,
+          # so a build arm that silently stopped producing its artifact fails
+          # the release instead of quietly shipping one platform short.
           files: |
             dist/korai-linux-amd64
             dist/korai-linux-amd64.sha256
+            dist/korai-linux-arm64
+            dist/korai-linux-arm64.sha256
             dist/korai-darwin-arm64
             dist/korai-darwin-arm64.sha256
+            dist/korai-darwin-amd64
+            dist/korai-darwin-amd64.sha256
             dist/korai-windows-amd64.exe
             dist/korai-windows-amd64.exe.sha256
