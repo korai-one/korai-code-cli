@@ -47,7 +47,7 @@ var scriptStyleRE = regexp.MustCompile(`(?is)<(script|style)\b[^>]*>.*?</\s*(scr
 // Input is the structured input for the WebFetch tool.
 type Input struct {
 	// URL is the http or https URL to fetch.
-	URL string `json:"url" jsonschema:"required,description=The URL to fetch (http or https)"`
+	URL string `json:"url" jsonschema:"required,description=http or https"`
 }
 
 // Tool implements tool.Tool for fetching URLs over HTTP(S).
@@ -84,7 +84,7 @@ func (t *Tool) Name() string { return "WebFetch" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Fetches the contents of a URL and returns it as text."
+	return "Fetch a URL and return its contents as text."
 }
 
 // InputSchema returns the JSON schema for WebFetch's input struct.

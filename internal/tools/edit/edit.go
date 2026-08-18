@@ -29,7 +29,7 @@ const lspDiagnosticsTimeout = 5 * time.Second
 // Input is the structured input for the Edit tool.
 type Input struct {
 	// Path is the path to the file to edit, relative to the working directory.
-	Path string `json:"path" jsonschema:"required,description=Path to the file to edit"`
+	Path string `json:"path" jsonschema:"required"`
 	// OldString is the exact text to replace. By default it must appear exactly once.
 	OldString string `json:"old_string" jsonschema:"required,description=exact text to replace"`
 	// NewString is the replacement text.
@@ -49,8 +49,8 @@ func (t *Tool) Name() string { return "Edit" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Replace an exact string in a file. By default the old string must appear " +
-		"exactly once; set replace_all to replace every occurrence."
+	return "Replace an exact string in a file. old_string must appear exactly " +
+		"once unless replace_all is set."
 }
 
 // InputSchema returns the JSON schema for Edit's input struct.

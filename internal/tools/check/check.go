@@ -47,9 +47,8 @@ func (t *Tool) Name() string { return "RunChecks" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Runs the project's configured verification commands (lint/tests/build) " +
-		"and returns their combined output; use it after making changes to confirm " +
-		"nothing broke."
+	return "Run the project's configured verification commands (lint/tests/build) " +
+		"and return their output. Use it after changes to confirm nothing broke."
 }
 
 // InputSchema returns the JSON schema for RunChecks's input struct.

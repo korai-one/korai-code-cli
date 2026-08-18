@@ -177,6 +177,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(loginCmd())
 	root.AddCommand(logoutCmd())
 	root.AddCommand(serveCmd())
+	root.AddCommand(evalCmd())
 	root.AddCommand(syncCmd())
 	root.AddCommand(teleportCmd())
 	root.AddCommand(nukeCmd())
@@ -225,8 +226,11 @@ func runPrint(ctx context.Context, opts runOptions) error {
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithSystemSection(sess.memSection),
 		engine.WithToolResultFilter(sess.condense),
-		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
+		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.autoCompactor),
+		engine.WithCompactThreshold(sess.threshold.Value),
+		engine.WithOverheadEstimator(compact.EstimateOverhead))
 	// Continue from any resumed history, then add this prompt.
 	messages := make([]apiclient.Message, 0, len(sess.initialHistory)+1)
 	messages = append(messages, sess.initialHistory...)
@@ -300,11 +304,15 @@ func runTUI(ctx context.Context, opts runOptions) error {
 	eng := engine.New(sess.client, sess.registry, permEngine, sess.deps,
 		engine.WithHooks(sess.hooks), engine.WithModelSelector(sess.models),
 		engine.WithUsageRecorder(sess.cost.Add), engine.WithSystemSuffix(planSuffix(sess.modes)),
+		engine.WithSystemSection(sess.memSection),
 		engine.WithToolResultFilter(sess.condense),
-		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.compactor))
+		engine.WithAutoCompact(compact.DefaultThreshold, compact.EstimateTokens, sess.autoCompactor),
+		engine.WithCompactThreshold(sess.threshold.Value),
+		engine.WithOverheadEstimator(compact.EstimateOverhead))
 
 	model := tui.New(eng, asker, sess.system, sess.commands).
 		WithVersion(version).
+		WithContextLimit(sess.threshold.Value).WithContextOverhead(sess.contextOverhead).
 		WithCompactor(sess.compactor).WithModes(sess.modes).WithPlanApprover(planApprover).
 		WithModels(sess.models).WithCost(sess.cost).WithAuthGate(sess.authGate).
 		WithFileFinder(sess.fileFinder).WithMentionExpander(sess.mentionExpander).

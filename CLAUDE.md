@@ -102,8 +102,9 @@ internal/
   engine/             # the agent loop: context → stream → tool loop → repeat.
                       #   UI-agnostic; emits events on <-chan engine.Event.
                       #   Options: WithHooks, WithModelSelector, WithUsageRecorder,
-                      #   WithSystemSuffix, WithAutoCompact, WithToolResultFilter.
-                      #   Enqueue() for mid-turn steering.
+                      #   WithSystemSuffix, WithSystemSection (per-request dynamic
+                      #   tail — the memory seam), WithAutoCompact,
+                      #   WithToolResultFilter. Enqueue() for mid-turn steering.
   apiclient/          # THE inference boundary (strangler fig). Own types; Client
                       #   interface; KoraiClient (buffered + fence dialect),
                       #   LocalWorkerClient (streams); ClientSelector; ModelSelector.
@@ -118,8 +119,12 @@ internal/
   skill/              # markdown skills → slash commands; bundled via go:embed.
   hook/               # config-driven lifecycle hooks (shell commands).
   mcp/                # MCP client; adapts external server tools onto tool.Tool.
-  memory/             # file-backed, capped persistent memory store.
-  compact/            # conversation summarization via apiclient.Client.
+  memory/             # file-backed, capped persistent memory: facts (key/value,
+                      #   pinned or keyword-gated) + notes (lexical recall EN+FR),
+                      #   injected per request via engine.WithSystemSection.
+  compact/            # tiered compaction: deterministic CondenseOlder, LLM
+                      #   summarization, honest EstimateTokens/EstimateOverhead,
+                      #   model-aware Threshold (n_ctx discovery).
   cost/               # token tracking + USD estimate. NOTE: prices.go still keys
                       #   on Anthropic-era model names; usage is recorded under the
                       #   Korai aliases (auto/fast/…), so /cost mostly shows "(no
@@ -157,7 +162,10 @@ selector, appends any system suffix) → `streamTurn` (calls `apiclient.Client.C
 accumulates text + tool calls + usage) → if tool calls, `executeTools` (each gated
 by `dispatchTool`) → append to history → repeat until no tool calls. Before each
 iteration `drainSteering` folds any mid-turn user input (`Enqueue`) into history.
-`WithAutoCompact` summarizes history that grows past `compact.DefaultThreshold`.
+`WithAutoCompact` compacts history past the effective threshold — checked
+before the turn AND between tool iterations (only pre-Run history is ever
+compacted); `WithCompactThreshold` makes the threshold model-aware and
+`WithOverheadEstimator` adds system-prompt + tool-schema cost to the estimate.
 Event types: `TextEvent`, `ToolStartEvent`, `ToolResultEvent`, `DoneEvent`
 (carries full post-turn history), `CompactedEvent`, `ErrorEvent`. Hooks fire at
 `SessionStart`, `PreToolUse` (can veto), `PostToolUse`. The model never imports
@@ -232,7 +240,9 @@ keeping `apiclient` free of JSON concerns. Message lines pass through a
 `PlainCodec` (`"none"`) is the only one; a future encrypting codec is recorded by
 name so `Load` selects the matching decoder. `--continue`/`-c` resumes the latest
 session for the cwd, `--resume <id>` a specific one, and `/resume` lists/loads them
-live. The engine auto-compacts when history grows past `compact.DefaultThreshold`.
+live. The engine auto-compacts past the effective threshold (`compact.Threshold`:
+min(120k, 0.75 × discovered n_ctx); the orchestrator's /v1/models advertises
+context_len, the worker channels don't — they keep the default).
 
 ### Snapshots (`internal/snapshot`) & /revert
 
@@ -315,7 +325,7 @@ the truncation guard matches `stopReason == "max_tokens"`, but both live backend
 report OpenAI-style `"length"` — so it is currently dead; `config.Merge` drops
 `lsp`/`checks`; `context.Build` labels project instructions "AGENTS.md" even when
 it read `CLAUDE.md`; env/git/date context is captured once at assembly and never
-refreshed across turns; `compact.EstimateTokens` ignores images; snapshots are
+refreshed across turns; snapshots are
 filesystem-only and their log is lost on resume.
 
 The pipeline is exercised by mock-client golden/`teatest` tests plus an assembly

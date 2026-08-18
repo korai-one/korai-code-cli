@@ -115,7 +115,8 @@ func TestRenderRoundTrip(t *testing.T) {
 }
 
 // TestRenderToolInstructions checks the prompt addendum names every tool and
-// inlines its compacted schema, and that no tools yields an empty string.
+// states its arguments as a compact signature, and that no tools yields an
+// empty string.
 func TestRenderToolInstructions(t *testing.T) {
 	t.Parallel()
 
@@ -124,19 +125,69 @@ func TestRenderToolInstructions(t *testing.T) {
 	}
 
 	got := renderToolInstructions([]ToolDef{
-		{Name: "read_file", Description: "Read a file.", InputSchema: json.RawMessage(`{ "type": "object", "properties": { "path": {"type":"string"} } }`)},
+		{Name: "read_file", Description: "Read a file.", InputSchema: json.RawMessage(`{ "type": "object", "properties": { "path": {"type":"string","description":"file to read"} }, "required": ["path"], "additionalProperties": false }`)},
 		{Name: "bash", Description: "Run a command.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	})
 	for _, want := range []string{
 		"<tool:tool_name>", // teaches the exact fence syntax via the example
 		"## read_file",
 		"Read a file.",
-		`{"type":"object","properties":{"path":{"type":"string"}}}`, // compacted schema
+		"Args: path*:string — file to read", // compact signature, not JSON Schema
 		"## bash",
 		"Run a command.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("instructions missing %q\n---\n%s", want, got)
+		}
+	}
+	// A property-less schema renders no Args line at all, and the JSON Schema
+	// scaffolding never reaches the prompt.
+	for _, unwanted := range []string{"additionalProperties", `"type":"object"`, "Args: \n"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("instructions should not contain %q\n---\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestRenderSchema covers the compact signature renderer: required markers,
+// the short type vocabulary, nesting, enums, and schemas with nothing to say.
+func TestRenderSchema(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", ``, ""},
+		{"no properties", `{"type":"object"}`, ""},
+		{"required marker", `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"]}`, "a*:string; b:string"},
+		{"type vocabulary", `{"properties":{"n":{"type":"integer"},"f":{"type":"number"},"ok":{"type":"boolean"},"xs":{"type":"array","items":{"type":"string"}}}}`, "n:int; f:number; ok:bool; xs:string[]"},
+		{"enum", `{"properties":{"s":{"type":"string","enum":["a","b"]}}}`, "s:string(a|b)"},
+		{"nested object array", `{"properties":{"items":{"type":"array","items":{"type":"object","properties":{"k":{"type":"string"}},"required":["k"]}}}}`, "items:{k*:string}[]"},
+		{"trailing period dropped", `{"properties":{"a":{"type":"string","description":"does a thing."}}}`, "a:string — does a thing"},
+		{"malformed", `{not json`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := renderSchema(json.RawMessage(tt.in)); got != tt.want {
+				t.Errorf("renderSchema(%s) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRenderSchemaPreservesOrder pins that arguments render in schema order,
+// not the shuffle a map iteration would give.
+func TestRenderSchemaPreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	const schema = `{"type":"object","properties":{"zebra":{"type":"string"},"apple":{"type":"string"},"middle":{"type":"string"}}}`
+	const want = "zebra:string; apple:string; middle:string"
+	for i := 0; i < 20; i++ {
+		if got := renderSchema(json.RawMessage(schema)); got != want {
+			t.Fatalf("renderSchema = %q, want %q", got, want)
 		}
 	}
 }

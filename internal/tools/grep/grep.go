@@ -34,9 +34,9 @@ type Input struct {
 	// Pattern is the Go regular expression to search file contents for.
 	Pattern string `json:"pattern" jsonschema:"required,description=Go regular expression"`
 	// Path is the directory to search; defaults to the working directory.
-	Path string `json:"path,omitempty" jsonschema:"description=directory to search, defaults to working directory"`
+	Path string `json:"path,omitempty" jsonschema:"description=directory to search (default: working directory)"`
 	// Glob, if set, restricts the search to files whose base name matches it (e.g. *.go).
-	Glob string `json:"glob,omitempty" jsonschema:"description=only search files whose base name matches this glob, e.g. *.go"`
+	Glob string `json:"glob,omitempty" jsonschema:"description=only files whose base name matches (e.g. *.go)"`
 }
 
 // Tool implements tool.Tool for regular-expression content search.
@@ -50,7 +50,7 @@ func (t *Tool) Name() string { return "Grep" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Searches file contents for a regular expression and returns matching lines as \"path:line:text\"."
+	return "Search file contents by regular expression. Returns matching lines as \"path:line:text\"."
 }
 
 // InputSchema returns the JSON schema for Grep's input struct.

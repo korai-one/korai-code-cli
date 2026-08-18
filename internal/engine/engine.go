@@ -26,20 +26,30 @@ const (
 	HookPostToolUse  = "PostToolUse"
 )
 
+// DefaultMaxToolTurns is the default cap on tool-loop iterations per Run. It is
+// generous enough for real multi-step work while bounding a runaway loop; see
+// WithMaxToolTurns.
+const DefaultMaxToolTurns = 24
+
 // Engine drives the LLM tool-calling loop for a single conversation turn.
 type Engine struct {
-	client     apiclient.Client
-	registry   *tool.Registry
-	perm       *perm.Engine
-	deps       tool.Deps
-	hooks      HookFunc
-	models     *apiclient.ModelSelector
-	usage      UsageRecorder
-	sysSuffix  func() string
-	filter     ToolResultFilter
-	compactFn  CompactFunc
-	compactMax int
-	estimate   func([]apiclient.Message) int
+	client       apiclient.Client
+	registry     *tool.Registry
+	perm         *perm.Engine
+	deps         tool.Deps
+	hooks        HookFunc
+	models       *apiclient.ModelSelector
+	usage        UsageRecorder
+	sysSuffix    func() string
+	sysSection   func(latestUserText string) string
+	filter       ToolResultFilter
+	compactFn    CompactFunc
+	compactMax   int
+	thresholdFn  func() int
+	estimate     func([]apiclient.Message) int
+	overhead     OverheadEstimator
+	maxToolTurns int
+	sampling     apiclient.Sampling
 
 	// steerMu guards steer: user text injected mid-turn (see Enqueue), drained
 	// into history at the top of each tool-loop iteration.
@@ -134,6 +144,18 @@ func WithSystemSuffix(fn func() string) Option {
 	return func(e *Engine) { e.sysSuffix = fn }
 }
 
+// WithSystemSection attaches a function whose return value is appended at the
+// very END of the system prompt (after any WithSystemSuffix text) on every
+// request. Unlike the suffix it receives the latest genuine user text, so it
+// can tailor its content to the turn — the seam the memory fabric plugs into.
+// It is re-evaluated on every model call within a turn, so state recorded
+// mid-turn (e.g. a Remember write during the tool loop) is visible on the very
+// next request. Injecting at the end keeps the byte-stable system-prompt
+// prefix intact for backend KV-cache reuse. An empty return adds nothing.
+func WithSystemSection(fn func(latestUserText string) string) Option {
+	return func(e *Engine) { e.sysSection = fn }
+}
+
 // WithToolResultFilter attaches a filter applied to every tool result before it
 // is appended to the model's history. It does not affect the ToolResultEvent the
 // UI receives, so the user still sees the full output. A nil filter disables it.
@@ -141,9 +163,33 @@ func WithToolResultFilter(f ToolResultFilter) Option {
 	return func(e *Engine) { e.filter = f }
 }
 
-// WithAutoCompact enables automatic compaction: before a turn, if the history's
-// estimated token count exceeds maxTokens, fn is called to summarize it. A nil
-// fn or non-positive maxTokens disables auto-compaction.
+// WithMaxToolTurns caps the number of tool-loop iterations in a single Run.
+// When the cap is reached the engine never hard-aborts: it forces a graceful
+// wrap-up — a synthetic user instruction telling the model to summarize and
+// finish, followed by one final turn with tools stripped from the request.
+// n <= 0 keeps DefaultMaxToolTurns.
+func WithMaxToolTurns(n int) Option {
+	return func(e *Engine) {
+		if n > 0 {
+			e.maxToolTurns = n
+		}
+	}
+}
+
+// WithSamplingDefaults sets default sampling parameters stamped on every
+// request the engine builds (the seam an eval harness uses to pin seed /
+// temperature for reproducible runs). The zero value — all pointers nil —
+// leaves every decision to the backend, which is the default.
+func WithSamplingDefaults(s apiclient.Sampling) Option {
+	return func(e *Engine) { e.sampling = s }
+}
+
+// WithAutoCompact enables automatic compaction: before a turn — and again
+// between tool-loop iterations — if the history's estimated token count
+// exceeds maxTokens, fn is called to summarize it. Intra-turn re-checks only
+// ever compact history from before the current Run; the running turn's own
+// messages are always kept verbatim. A nil fn or non-positive maxTokens
+// disables auto-compaction.
 func WithAutoCompact(maxTokens int, estimate func([]apiclient.Message) int, fn CompactFunc) Option {
 	return func(e *Engine) {
 		e.compactMax = maxTokens
@@ -152,14 +198,37 @@ func WithAutoCompact(maxTokens int, estimate func([]apiclient.Message) int, fn C
 	}
 }
 
+// WithCompactThreshold attaches a dynamic auto-compaction threshold, consulted
+// on every check; a positive return overrides WithAutoCompact's static
+// maxTokens. This is how a model-aware threshold (a fraction of the discovered
+// context window) reaches the engine without the engine knowing how it was
+// discovered. A nil fn or non-positive return keeps the static value.
+func WithCompactThreshold(fn func() int) Option {
+	return func(e *Engine) { e.thresholdFn = fn }
+}
+
+// OverheadEstimator estimates the token cost of the per-request prompt
+// overhead that message history does not show: the composed system prompt and
+// the tool definitions (rendered into the prompt by the client). The engine
+// adds it to the history estimate for threshold decisions.
+type OverheadEstimator func(system string, tools []apiclient.ToolDef) int
+
+// WithOverheadEstimator attaches an overhead estimator to the auto-compaction
+// decision, making the estimate honest about the system prompt and tool
+// schemas. A nil estimator counts history only (the historical behavior).
+func WithOverheadEstimator(fn OverheadEstimator) Option {
+	return func(e *Engine) { e.overhead = fn }
+}
+
 // New creates an Engine with the given inference client, tool registry,
 // permission engine, and tool dependencies.
 func New(client apiclient.Client, registry *tool.Registry, permEngine *perm.Engine, deps tool.Deps, opts ...Option) *Engine {
 	e := &Engine{
-		client:   client,
-		registry: registry,
-		perm:     permEngine,
-		deps:     deps,
+		client:       client,
+		registry:     registry,
+		perm:         permEngine,
+		deps:         deps,
+		maxToolTurns: DefaultMaxToolTurns,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -200,12 +269,42 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 	copy(history, messages)
 
 	e.fireHook(ctx, HookSessionStart, "", nil)
-	history = e.maybeCompact(ctx, history, ch)
+	history = e.maybeCompact(ctx, history, system, ch)
+
+	// Everything at or beyond runStart belongs to this Run and is never
+	// compacted by the intra-turn re-check below. The trailing user message is
+	// the prompt that started this Run, so it is part of the in-flight turn.
+	runStart := len(history)
+	if runStart > 0 && history[runStart-1].Role == apiclient.RoleUser {
+		runStart--
+	}
+
+	detect := newLoopDetector()
+	toolTurns := 0
+	iterations := 0
+	fenceRetried := false
+	constrainNext := false
 
 	for {
+		// Between tool-loop iterations, re-check the compaction threshold: a
+		// tool-heavy turn can blow past it long before the next Run would have
+		// compacted. Only pre-run history is ever compacted.
+		if iterations > 0 {
+			history, runStart = e.maybeCompactOlder(ctx, history, runStart, system, ch)
+		}
+		iterations++
+
 		// Fold in any text the user typed mid-turn before building the request.
 		history = e.drainSteering(history)
 		req := e.buildRequest(ctx, history, system)
+		if constrainNext {
+			// Malformed-fence retry turn: opt into grammar-enforced tool fences
+			// on backends that support constrained decoding, so the retried call
+			// is syntactically incapable of the same mistake. One turn only —
+			// a fence grammar forces a tool call and would strangle prose.
+			req.ConstrainTools = true
+			constrainNext = false
+		}
 		turn, err := e.streamTurn(ctx, req, ch)
 		if err != nil {
 			return history, err
@@ -213,6 +312,29 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 		if e.usage != nil {
 			e.usage(req.Model, turn.usage)
 		}
+
+		// Malformed-fence guard: when the turn carries a tool payload the fence
+		// layer could not parse cleanly (an unterminated fence remnant in the
+		// text, or a call body that is not a valid JSON object), retry once with
+		// a corrective notice instead of executing or silently finishing. Skipped
+		// on a token-truncated turn — the truncation guard below owns that case.
+		if !fenceRetried && turn.stopReason != apiclient.StopMaxTokens {
+			if frags := apiclient.MalformedFences(turn.text, turn.toolCalls); len(frags) > 0 {
+				fenceRetried = true
+				slog.Warn("malformed tool call in model reply; retrying turn once", "fragments", len(frags))
+				// Record the turn as flattened fence text: an unexecuted
+				// ToolCallBlock would demand a matching result block, and a
+				// malformed body may not even re-marshal as JSON.
+				history = append(history, apiclient.Message{
+					Role:    apiclient.RoleAssistant,
+					Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: apiclient.RenderAssistantTurnText(turn.text, turn.toolCalls)}},
+				})
+				e.Enqueue(apiclient.FenceCorrectionNotice(frags))
+				constrainNext = true
+				continue
+			}
+		}
+
 		if len(turn.toolCalls) == 0 {
 			if turn.stopReason == apiclient.StopMaxTokens {
 				slog.Warn("response truncated: hit max output tokens")
@@ -244,11 +366,17 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 				apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
 				apiclient.Message{Role: apiclient.RoleUser, Content: results},
 			)
+			// A truncated iteration consumed a model call: count it against the
+			// budget so a truncation ping-pong cannot loop forever.
+			toolTurns++
+			if toolTurns >= e.maxToolTurns {
+				return e.wrapUp(ctx, history, system, ch, wrapUpReasonBudget)
+			}
 			continue
 		}
 
 		// Execute all tool calls and collect results.
-		assistantContent, results, err := e.executeTools(ctx, turn.toolCalls, ch)
+		assistantContent, results, err := e.executeTools(ctx, turn.toolCalls, detect, ch)
 		if err != nil {
 			return history, err
 		}
@@ -267,17 +395,97 @@ func (e *Engine) run(ctx context.Context, messages []apiclient.Message, system s
 			apiclient.Message{Role: apiclient.RoleAssistant, Content: assistantContent},
 			apiclient.Message{Role: apiclient.RoleUser, Content: results},
 		)
+
+		// Loop-hardening exits: a run that keeps getting vetoed, or one that has
+		// spent its tool budget, is wrapped up gracefully — never hard-aborted.
+		if detect.vetoCount() >= 2 {
+			return e.wrapUp(ctx, history, system, ch, wrapUpReasonLoop)
+		}
+		toolTurns++
+		if toolTurns >= e.maxToolTurns {
+			return e.wrapUp(ctx, history, system, ch, wrapUpReasonBudget)
+		}
 	}
 }
 
+// Reasons surfaced to the model in the forced wrap-up instruction.
+const (
+	wrapUpReasonBudget = "You have reached the maximum number of tool iterations for this request."
+	wrapUpReasonLoop   = "You appear to be stuck repeating tool calls without making progress."
+)
+
+// wrapUpNotice is the synthetic user-role instruction injected before the
+// final, tool-less turn of a forced wrap-up.
+func wrapUpNotice(reason string) string {
+	return "[system] " + reason + " Tools are disabled for your next reply. Summarize what you did and what you found, state anything you could not finish, and give your best final answer now — do not attempt further tool calls."
+}
+
+// wrapUp forces a graceful end of the run: it injects a wrap-up instruction
+// through the steering seam (so it merges into the trailing user message, e.g.
+// fresh tool results) and runs one final turn with tools stripped from the
+// request, recording the model's summary. Any tool call the model still
+// attempts is ignored — there are no tools on the request to honor it with.
+func (e *Engine) wrapUp(ctx context.Context, history []apiclient.Message, system string, ch chan<- Event, reason string) ([]apiclient.Message, error) {
+	slog.Warn("forcing graceful wrap-up", "reason", reason)
+	e.Enqueue(wrapUpNotice(reason))
+	history = e.drainSteering(history)
+
+	req := e.buildRequest(ctx, history, system)
+	req.Tools = nil // the model must answer in prose
+	turn, err := e.streamTurn(ctx, req, ch)
+	if err != nil {
+		return history, err
+	}
+	if e.usage != nil {
+		e.usage(req.Model, turn.usage)
+	}
+	if len(turn.toolCalls) > 0 {
+		slog.Warn("model attempted tool calls during forced wrap-up; ignored", "count", len(turn.toolCalls))
+	}
+	if turn.text != "" {
+		history = append(history, apiclient.Message{
+			Role:    apiclient.RoleAssistant,
+			Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: turn.text}},
+		})
+	}
+	return history, nil
+}
+
+// compactEnabled reports whether auto-compaction is configured at all.
+func (e *Engine) compactEnabled() bool {
+	return e.compactFn != nil && e.estimate != nil && e.effectiveThreshold() > 0
+}
+
+// effectiveThreshold resolves the auto-compaction threshold: the dynamic
+// function when attached and positive, else the static maxTokens.
+func (e *Engine) effectiveThreshold() int {
+	if e.thresholdFn != nil {
+		if v := e.thresholdFn(); v > 0 {
+			return v
+		}
+	}
+	return e.compactMax
+}
+
+// estimateTotal is the honest size estimate for a would-be request: the
+// history estimate plus (when an overhead estimator is attached) the composed
+// system prompt and tool-schema overhead the history does not show.
+func (e *Engine) estimateTotal(ctx context.Context, history []apiclient.Message, system string) int {
+	total := e.estimate(history)
+	if e.overhead != nil {
+		total += e.overhead(e.composeSystem(history, system), e.toolDefs(ctx))
+	}
+	return total
+}
+
 // maybeCompact summarizes history before a turn when it has grown past the
-// configured token threshold. On failure it logs and keeps the original history
+// effective token threshold. On failure it logs and keeps the original history
 // (fail-open: a compaction error must not abort the turn).
-func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, ch chan<- Event) []apiclient.Message {
-	if e.compactFn == nil || e.estimate == nil || e.compactMax <= 0 {
+func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, system string, ch chan<- Event) []apiclient.Message {
+	if !e.compactEnabled() {
 		return history
 	}
-	if e.estimate(history) <= e.compactMax {
+	if e.estimateTotal(ctx, history, system) <= e.effectiveThreshold() {
 		return history
 	}
 	before := len(history)
@@ -288,6 +496,43 @@ func (e *Engine) maybeCompact(ctx context.Context, history []apiclient.Message, 
 	}
 	send(ch, CompactedEvent{Before: before, After: len(compacted)})
 	return compacted
+}
+
+// maybeCompactOlder is the intra-turn re-check, run between tool-loop
+// iterations: when the honest estimate crosses the threshold mid-turn it
+// compacts ONLY the history that predates this Run (history[:runStart]) and
+// re-appends the current run's messages verbatim — the in-flight turn's
+// context must never be summarized out from under the model. When the current
+// run's messages alone exceed the budget there is nothing safe to compact, so
+// it logs a warning and proceeds. Fail-open like maybeCompact. It returns the
+// (possibly new) history and runStart.
+func (e *Engine) maybeCompactOlder(ctx context.Context, history []apiclient.Message, runStart int, system string, ch chan<- Event) ([]apiclient.Message, int) {
+	if !e.compactEnabled() || runStart <= 0 || runStart > len(history) {
+		return history, runStart
+	}
+	threshold := e.effectiveThreshold()
+	if e.estimateTotal(ctx, history, system) <= threshold {
+		return history, runStart
+	}
+	current := history[runStart:]
+	if e.estimateTotal(ctx, current, system) > threshold {
+		slog.Warn("current turn alone exceeds the compaction budget; skipping intra-turn compaction",
+			"threshold", threshold)
+		return history, runStart
+	}
+	compacted, err := e.compactFn(ctx, history[:runStart])
+	if err != nil {
+		slog.Warn("intra-turn auto-compaction failed; continuing without it", "error", err)
+		return history, runStart
+	}
+	if len(compacted) >= runStart {
+		return history, runStart // nothing gained; avoid a no-op event
+	}
+	merged := make([]apiclient.Message, 0, len(compacted)+len(current))
+	merged = append(merged, compacted...)
+	merged = append(merged, current...)
+	send(ch, CompactedEvent{Before: len(history), After: len(merged)})
+	return merged, len(compacted)
 }
 
 // turnResult captures what a single model turn produced.
@@ -357,16 +602,17 @@ func (e *Engine) failTruncatedCalls(calls []apiclient.ToolCallCompleteEvent, ch 
 	return assistantBlocks, resultBlocks
 }
 
-// executeTools runs each tool call, gating on permissions, and returns the
-// assistant content block list and user-side tool result content blocks.
-func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCompleteEvent, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock, error) {
+// executeTools runs each tool call, gating on permissions and the loop
+// detector, and returns the assistant content block list and user-side tool
+// result content blocks.
+func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCompleteEvent, detect *loopDetector, ch chan<- Event) ([]apiclient.ContentBlock, []apiclient.ContentBlock, error) {
 	assistantBlocks := make([]apiclient.ContentBlock, 0, len(calls))
 	resultBlocks := make([]apiclient.ContentBlock, 0, len(calls))
 
 	for _, call := range calls {
 		assistantBlocks = append(assistantBlocks, apiclient.ToolCallBlock(call))
 
-		result := e.dispatchTool(ctx, call, ch)
+		result := e.dispatchTool(ctx, call, detect, ch)
 		// Condense the model-facing copy only; the UI already got the full
 		// output via the ToolResultEvent sent inside dispatchTool.
 		content := result.Content
@@ -382,13 +628,29 @@ func (e *Engine) executeTools(ctx context.Context, calls []apiclient.ToolCallCom
 	return assistantBlocks, resultBlocks, nil
 }
 
-// dispatchTool looks up the tool, resolves permission through the permission
-// engine, and executes it if allowed. Every outcome (including denial and hook
-// blocks) is surfaced as a ToolResultEvent so the UI reflects what happened.
-func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallCompleteEvent, ch chan<- Event) tool.Result {
+// dispatchTool looks up the tool, pre-validates its input, consults the loop
+// detector, resolves permission through the permission engine, and executes it
+// if allowed. Every outcome (including denial, veto, and hook blocks) is
+// surfaced as a ToolResultEvent so the UI reflects what happened.
+func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallCompleteEvent, detect *loopDetector, ch chan<- Event) tool.Result {
 	t, ok := e.registry.Get(call.Name)
 	if !ok {
 		return e.blocked(ch, call.Name, fmt.Sprintf("unknown tool %q", call.Name))
+	}
+
+	// Schema pre-validation: garbage that cannot be a JSON object never reaches
+	// Execute. Tools keep their own explicit validation as defense-in-depth for
+	// well-formed-but-wrong input.
+	if !apiclient.ValidToolInput(call.Input) {
+		return e.blocked(ch, call.Name, fmt.Sprintf("tool call not executed: input for %q is not a valid JSON object; re-emit the call with a well-formed JSON body", call.Name))
+	}
+
+	// Loop detector: an identical no-progress call repeated a third time is
+	// vetoed before permissions, so the user is never prompted for a call the
+	// engine refuses to run.
+	if detect.check(call.Name, call.Input) {
+		slog.Warn("loop detector vetoed a repeated tool call", "tool", call.Name)
+		return e.blocked(ch, call.Name, loopVetoMessage(call.Name))
 	}
 
 	base := t.CheckPermission(ctx, call.Input, e.perm.Mode())
@@ -419,6 +681,15 @@ func (e *Engine) dispatchTool(ctx context.Context, call apiclient.ToolCallComple
 		result = tool.Result{Content: err.Error(), IsError: true}
 	}
 
+	// Record the raw result with the loop detector (pre-notice, so the notice
+	// itself never perturbs the comparison); on the second identical
+	// no-progress call, append the corrective notice for the model — the UI
+	// sees it too via the ToolResultEvent below, which is intentional.
+	if detect.observe(call.Name, call.Input, result.Content) {
+		slog.Warn("loop detector warned on a repeated tool call", "tool", call.Name)
+		result.Content += loopWarnNotice
+	}
+
 	e.fireHook(ctx, HookPostToolUse, call.Name, call.Input)
 
 	send(ch, ToolResultEvent{Name: call.Name, Result: result})
@@ -434,7 +705,28 @@ func (e *Engine) blocked(ch chan<- Event, name, reason string) tool.Result {
 }
 
 func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, system string) apiclient.Request {
-	tools := e.registry.All()
+	req := apiclient.Request{
+		System:   e.composeSystem(history, system),
+		Messages: history,
+		Tools:    e.toolDefs(ctx),
+		Sampling: e.sampling,
+	}
+	if e.models != nil {
+		req.Model = e.models.Get()
+	}
+	return req
+}
+
+// toolDefs renders the registry into the wire tool definitions.
+func (e *Engine) toolDefs(ctx context.Context) []apiclient.ToolDef {
+	return ToolDefs(ctx, e.registry)
+}
+
+// ToolDefs converts every tool in registry into its apiclient definition — the
+// same conversion buildRequest performs, exported so the session layer can
+// estimate the prompt overhead of the tool block without duplicating it.
+func ToolDefs(ctx context.Context, registry *tool.Registry) []apiclient.ToolDef {
+	tools := registry.All()
 	toolDefs := make([]apiclient.ToolDef, 0, len(tools))
 	for _, t := range tools {
 		raw, err := json.Marshal(t.InputSchema())
@@ -447,20 +739,46 @@ func (e *Engine) buildRequest(ctx context.Context, history []apiclient.Message, 
 			InputSchema: raw,
 		})
 	}
+	return toolDefs
+}
+
+// composeSystem assembles the effective system prompt for a request: the
+// caller's system, then the per-turn suffix, then the per-turn dynamic section
+// (memory) — in that order, so the stable prefix stays byte-identical across
+// requests and only the tail varies.
+func (e *Engine) composeSystem(history []apiclient.Message, system string) string {
 	if e.sysSuffix != nil {
 		if suffix := e.sysSuffix(); suffix != "" {
 			system += "\n\n" + suffix
 		}
 	}
-	req := apiclient.Request{
-		System:   system,
-		Messages: history,
-		Tools:    toolDefs,
+	if e.sysSection != nil {
+		if section := e.sysSection(latestUserText(history)); section != "" {
+			system += "\n\n" + section
+		}
 	}
-	if e.models != nil {
-		req.Model = e.models.Get()
+	return system
+}
+
+// latestUserText returns the text of the most recent user message that carries
+// genuine typed text (a TextBlock) — skipping trailing tool-result-only user
+// messages — so per-turn providers can key off what the user actually said.
+func latestUserText(history []apiclient.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != apiclient.RoleUser {
+			continue
+		}
+		var parts []string
+		for _, b := range history[i].Content {
+			if tb, ok := b.(apiclient.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
+				parts = append(parts, tb.Text)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
 	}
-	return req
+	return ""
 }
 
 func send(ch chan<- Event, e Event) {

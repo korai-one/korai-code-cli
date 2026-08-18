@@ -25,10 +25,10 @@ import (
 // Input is the structured input for the Glob tool.
 type Input struct {
 	// Pattern is the glob pattern to match against, e.g. "**/*.go".
-	Pattern string `json:"pattern" jsonschema:"required,description=Glob pattern to match against file paths, e.g. **/*.go (** matches across directory segments)"`
+	Pattern string `json:"pattern" jsonschema:"required,description=e.g. **/*.go — ** matches across directory segments"`
 	// Path is the base directory to search; relative paths resolve against the
 	// working directory. When empty the working directory is used.
-	Path string `json:"path,omitempty" jsonschema:"description=Base directory to search; defaults to the working directory"`
+	Path string `json:"path,omitempty" jsonschema:"description=base directory (default: working directory)"`
 }
 
 // Tool implements tool.Tool for glob file-path matching.
@@ -42,7 +42,7 @@ func (t *Tool) Name() string { return "Glob" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Finds files matching a glob pattern (supports ** for recursive matching) and returns matching paths."
+	return "Find files matching a glob pattern and return their paths."
 }
 
 // InputSchema returns the JSON schema for Glob's input struct.

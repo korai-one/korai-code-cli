@@ -19,10 +19,10 @@ import (
 type Input struct {
 	// TokenBudget caps the approximate size of the returned map. Optional; a
 	// sensible default is used when zero or negative.
-	TokenBudget int `json:"token_budget,omitempty" jsonschema:"description=approximate token budget for the map; 0 uses the default (~1024)"`
+	TokenBudget int `json:"token_budget,omitempty" jsonschema:"description=approximate budget (0 = default ~1024)"`
 	// Focus lists files the map should foreground (paths relative to the repo
 	// root). Their neighborhood is boosted in the ranking. Optional.
-	Focus []string `json:"focus,omitempty" jsonschema:"description=files to foreground in the map; their related files are boosted in the ranking"`
+	Focus []string `json:"focus,omitempty" jsonschema:"description=files to foreground — their related files are boosted"`
 }
 
 // Tool implements tool.Tool for generating a repository map.
@@ -36,9 +36,9 @@ func (t *Tool) Name() string { return "RepoMap" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Return a ranked outline of the repository: the most important source files (by reference graph / PageRank) " +
-		"and the key symbols (functions, types, classes) each defines, fitted to a token budget. " +
-		"Use it to orient in an unfamiliar codebase before reading individual files. Pass focus to foreground files you are working on."
+	return "Ranked outline of the repository: the most important source files (by " +
+		"reference graph) and the key symbols each defines, fitted to a token " +
+		"budget. Use it to orient in an unfamiliar codebase before reading files."
 }
 
 // InputSchema returns the JSON schema for RepoMap's input struct.

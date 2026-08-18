@@ -41,7 +41,7 @@ type Approver interface {
 // Input is the structured input for ExitPlanMode.
 type Input struct {
 	// Plan is the proposed plan, presented to the user for approval.
-	Plan string `json:"plan" jsonschema:"required,description=The concrete plan you intend to carry out, for the user to approve"`
+	Plan string `json:"plan" jsonschema:"required,description=the concrete plan for the user to approve"`
 }
 
 // Tool implements tool.Tool for exiting plan mode with an approved plan.
@@ -64,7 +64,7 @@ func (t *Tool) Name() string { return "ExitPlanMode" }
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(context.Context) string {
 	return "Present your plan for approval and, if approved, leave plan mode to " +
-		"carry it out. Only call this while in plan mode, after investigating."
+		"carry it out. Call only while in plan mode, after investigating."
 }
 
 // InputSchema returns the JSON schema for ExitPlanMode's input struct.

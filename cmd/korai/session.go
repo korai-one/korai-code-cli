@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -57,12 +58,28 @@ type assembled struct {
 	modes     *perm.ModeSelector
 	cost      *cost.Tracker
 	compactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
-	hooks     engine.HookFunc
-	condense  engine.ToolResultFilter
-	rules     perm.Rules
-	system    string
-	deps      tool.Deps
-	closers   []func() error
+	// autoCompactor is the tiered function behind engine auto-compaction:
+	// deterministic condensing of stale tool results first, LLM summarization
+	// only when that is not enough. The manual /compact path keeps the plain
+	// summarizing compactor above — an explicit request should summarize.
+	autoCompactor func(context.Context, []apiclient.Message) ([]apiclient.Message, error)
+	// threshold is the effective auto-compaction threshold: the 120k default,
+	// lowered when the backend reports a smaller model context window
+	// (discovered in the background at assembly).
+	threshold *compact.Threshold
+	// contextOverhead is the estimated token cost of the static prompt
+	// overhead (system prompt + tool schemas) the TUI's context meter adds to
+	// its history estimate.
+	contextOverhead int
+	hooks           engine.HookFunc
+	condense        engine.ToolResultFilter
+	// memSection renders the persistent-memory system-prompt section for the
+	// latest user message; wired into engine.WithSystemSection.
+	memSection func(latestUserText string) string
+	rules      perm.Rules
+	system     string
+	deps       tool.Deps
+	closers    []func() error
 
 	// authGate reports whether the session may run a turn: nil when the active
 	// backend is ready, or an actionable error when a remote turn needs an API
@@ -152,7 +169,8 @@ func (a *assembled) close() {
 // assemble loads config, resolves model and permission mode (flags override the
 // config file), builds the tool registry (built-ins + memory + MCP + the Task
 // sub-agent tool), the slash-command registry (built-ins + skills), and the
-// lifecycle hook runner, and composes the system prompt with persistent memory.
+// lifecycle hook runner, and wires the persistent-memory provider that injects
+// the memory section into the system prompt on every model request.
 func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approver) (*assembled, error) {
 	// Load .env from the working directory as a fallback for local development.
 	// godotenv.Load does not override variables already set in the real
@@ -270,10 +288,12 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	rules := perm.Rules{Allow: settings.Permissions.Allow, Deny: settings.Permissions.Deny}
 
 	system := prompt.Compose(appctx.Build(ctx, wd))
+	// Persistent memory is injected per model request through the engine's
+	// dynamic system-section seam (WithSystemSection), not concatenated here —
+	// so a Remember write mid-session is visible on the very next request, and
+	// the recalled notes track the latest user message.
 	store := memory.NewStore(filepath.Join(wd, ".korai", "MEMORY.md"))
-	if mem, rerr := store.Read(); rerr == nil && strings.TrimSpace(mem) != "" {
-		system += "\n\n# Memory\n\n" + mem
-	}
+	memSection := memory.NewProvider(store).Section
 
 	// Two registries: the sub-agent set has every tool EXCEPT Task, so a
 	// spawned sub-agent cannot recurse into more sub-agents. The main set is the
@@ -301,6 +321,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 	spawner := &subAgentSpawner{
 		client: client, registry: subRegistry, mode: mode, rules: rules, deps: deps, system: system,
+		memSection: memSection,
 	}
 	registry.Register(agenttool.New(spawner))
 	// TodoWrite tracks the session's task list; it is a top-level concern, not
@@ -312,6 +333,26 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	compactor := func(cctx context.Context, history []apiclient.Message) ([]apiclient.Message, error) {
 		return compact.Compact(cctx, client, history, compact.DefaultKeepRecent)
 	}
+
+	// The auto-compaction threshold starts at the 120k default and is lowered
+	// in the background when the backend reports the model's real context
+	// window (orchestrator /v1/models context_len). The direct worker channel
+	// and the worker loopback endpoint advertise none, so they keep the
+	// default — see compact.Threshold's fallback chain.
+	threshold := compact.NewThreshold()
+	go func() {
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		threshold.Discover(dctx, client, model)
+	}()
+	autoCompactor := func(cctx context.Context, history []apiclient.Message) ([]apiclient.Message, error) {
+		return compact.Auto(cctx, client, history, compact.DefaultKeepRecent, threshold.Value())
+	}
+
+	// Static prompt overhead for the TUI context meter: the system prompt plus
+	// the fence tool-instruction block. The per-turn memory section is not
+	// included (it is small and varies); this is a floor, not an exact count.
+	contextOverhead := compact.EstimateOverhead(system, engine.ToolDefs(ctx, registry))
 
 	// Shadow-git snapshots: a worktree checkpoint is taken before each turn and
 	// /revert restores one. The Manager is a no-op when git is absent; the Log
@@ -358,20 +399,24 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 	}
 
 	return &assembled{
-		client:    client,
-		registry:  registry,
-		commands:  buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog, clientSelector),
-		models:    models,
-		modes:     modes,
-		cost:      costTracker,
-		compactor: compactor,
-		hooks:     buildHooks(settings.Hooks),
-		condense:  buildCondenser(settings.Condense),
-		rules:     rules,
-		system:    system,
-		deps:      deps,
-		closers:   closers,
-		authGate:  authGate,
+		client:          client,
+		registry:        registry,
+		commands:        buildCommands(home, wd, registry, koraiModels, models, modes, costTracker, sessStore, snapLog, clientSelector),
+		models:          models,
+		modes:           modes,
+		cost:            costTracker,
+		compactor:       compactor,
+		autoCompactor:   autoCompactor,
+		threshold:       threshold,
+		contextOverhead: contextOverhead,
+		hooks:           withMemoryTurnReset(buildHooks(settings.Hooks), store),
+		condense:        buildCondenser(settings.Condense),
+		memSection:      memSection,
+		rules:           rules,
+		system:          system,
+		deps:            deps,
+		closers:         closers,
+		authGate:        authGate,
 
 		fileFinder:      workspaceFiles(wd),
 		mentionExpander: mentionExpander(wd),
@@ -431,7 +476,18 @@ func openSyncedStore(ctx context.Context, home string, fs synchub.FileSettings) 
 	// Sessions persist to SQLite in the shared SDK's canonical korai.Session
 	// format (teleport-compatible); if the database cannot be opened, fall back
 	// to the JSONL file store so a storage error never blocks a session.
-	sq, serr := sdksession.NewSQLiteStore(ctx, sessionsDBPath(home))
+	//
+	// Migrate first: the SDK's schema is CREATE TABLE IF NOT EXISTS, which is a
+	// no-op against a database from an older SDK and leaves it short a column,
+	// so every save fails. A migration failure is not fatal — the open below
+	// has its own fallback.
+	dbPath := sessionsDBPath(home)
+	if added, merr := session.MigrateSQLite(ctx, dbPath); merr != nil {
+		slog.Warn("migrating sqlite session store", "error", merr)
+	} else if len(added) > 0 {
+		slog.Info("migrated sqlite session store", "added_columns", added)
+	}
+	sq, serr := sdksession.NewSQLiteStore(ctx, dbPath)
 	if serr == nil {
 		if syncCodec != nil {
 			sq.WithCodec(syncCodec)
@@ -631,6 +687,23 @@ func buildCommands(home, wd string, registry *tool.Registry, modelList []string,
 	return reg
 }
 
+// withMemoryTurnReset composes the configured hooks with a reset of the memory
+// store's per-turn write caps at each SessionStart (the engine fires it once
+// per top-level Run). Sub-agent engines carry no hooks, so their writes share
+// the enclosing turn's budget — intentional: a turn's total memory writes are
+// capped no matter who performs them.
+func withMemoryTurnReset(base engine.HookFunc, store *memory.Store) engine.HookFunc {
+	return func(ctx context.Context, event, toolName string, input json.RawMessage) (bool, string) {
+		if event == engine.HookSessionStart {
+			store.ResetTurn()
+		}
+		if base != nil {
+			return base(ctx, event, toolName, input)
+		}
+		return false, ""
+	}
+}
+
 // buildHooks translates the configured hook specs into an engine hook function.
 // Returns nil when no hooks are configured.
 func buildHooks(specs map[string][]config.HookSpec) engine.HookFunc {
@@ -692,12 +765,13 @@ func connectMCPServers(ctx context.Context, specs map[string]config.MCPServerSpe
 // fail-closed asker (an "ask" tool is denied), so it can only use tools that
 // are allowed without prompting in the active mode.
 type subAgentSpawner struct {
-	client   apiclient.Client
-	registry *tool.Registry
-	mode     perm.Mode
-	rules    perm.Rules
-	deps     tool.Deps
-	system   string
+	client     apiclient.Client
+	registry   *tool.Registry
+	mode       perm.Mode
+	rules      perm.Rules
+	deps       tool.Deps
+	system     string
+	memSection func(string) string
 }
 
 // headlessPlanApprover resolves ExitPlanMode without a UI: it approves when the
@@ -740,7 +814,8 @@ func togglePlan(modes *perm.ModeSelector) string {
 // Spawn runs the sub-agent loop for prompt and returns the concatenated text.
 func (s *subAgentSpawner) Spawn(ctx context.Context, prompt string) (string, error) {
 	permEngine := perm.NewEngine(perm.NewModeSelector(s.mode), s.rules, perm.DenyAsker{})
-	eng := engine.New(s.client, s.registry, permEngine, s.deps)
+	eng := engine.New(s.client, s.registry, permEngine, s.deps,
+		engine.WithSystemSection(s.memSection))
 	messages := []apiclient.Message{
 		{Role: apiclient.RoleUser, Content: []apiclient.ContentBlock{apiclient.TextBlock{Text: prompt}}},
 	}

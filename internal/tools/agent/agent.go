@@ -28,9 +28,9 @@ type Spawner interface {
 // Input is the structured input for the Task tool.
 type Input struct {
 	// Description is a short description of the sub-task.
-	Description string `json:"description" jsonschema:"required,description=A short description of the sub-task"`
+	Description string `json:"description" jsonschema:"required,description=short label for the sub-task"`
 	// Prompt is the full instruction for the sub-agent.
-	Prompt string `json:"prompt" jsonschema:"required,description=The full instruction for the sub-agent"`
+	Prompt string `json:"prompt" jsonschema:"required,description=the full instruction for the sub-agent"`
 }
 
 // Tool implements tool.Tool for delegating a sub-task to a sub-agent.
@@ -48,10 +48,9 @@ func (t *Tool) Name() string { return "Task" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Run a sub-agent to handle a focused sub-task and return its final " +
-		"result. The sub-agent has its own set of tools but cannot itself spawn " +
-		"further Task sub-agents. Use this to delegate self-contained work that " +
-		"benefits from a fresh, focused context."
+	return "Delegate a self-contained sub-task to a sub-agent with its own fresh " +
+		"context and return its result. The sub-agent has its own tools but " +
+		"cannot spawn further Task sub-agents."
 }
 
 // InputSchema returns the JSON schema for Task's input struct.

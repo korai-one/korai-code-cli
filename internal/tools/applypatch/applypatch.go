@@ -33,7 +33,7 @@ const lspDiagnosticsTimeout = 5 * time.Second
 type Input struct {
 	// Patch is the full patch envelope, beginning with "*** Begin Patch" and
 	// ending with "*** End Patch".
-	Patch string `json:"patch" jsonschema:"required,description=A patch in the *** Begin Patch / *** End Patch envelope: *** Add File: / *** Update File: / *** Delete File: sections with @@ context anchors and space/-/+ hunk lines"`
+	Patch string `json:"patch" jsonschema:"required,description=*** Begin Patch / *** End Patch envelope wrapping one or more sections — '*** Add File: path' then '+' lines / '*** Update File: path' (optionally '*** Move to: newpath') with '@@ context' anchors and hunk lines prefixed by space (context) - (remove) or + (add) / '*** Delete File: path'"`
 }
 
 // Tool implements tool.Tool for applying multi-file patches.
@@ -47,9 +47,8 @@ func (t *Tool) Name() string { return "ApplyPatch" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Apply a multi-file patch in one call. The patch is wrapped in '*** Begin Patch' / '*** End Patch' and contains one or more sections: " +
-		"'*** Add File: path' followed by '+' lines; '*** Update File: path' (optionally '*** Move to: newpath') with '@@ context' anchors and hunk lines prefixed by a space (context), '-' (remove), or '+' (add); or '*** Delete File: path'. " +
-		"Prefer this for changes spanning several files or several hunks; context lines are matched fuzzily."
+	return "Apply a multi-file patch in one call. Prefer it over Edit for changes " +
+		"spanning several files or hunks. Context lines are matched fuzzily."
 }
 
 // InputSchema returns the JSON schema for ApplyPatch's input struct.

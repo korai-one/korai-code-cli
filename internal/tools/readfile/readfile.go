@@ -18,7 +18,7 @@ import (
 // Input is the structured input for the ReadFile tool.
 type Input struct {
 	// Path is the path to the file to read, relative to the working directory.
-	Path string `json:"path" jsonschema:"required,description=Path to the file to read"`
+	Path string `json:"path" jsonschema:"required"`
 }
 
 // Tool implements tool.Tool for reading files.
@@ -32,7 +32,7 @@ func (t *Tool) Name() string { return "ReadFile" }
 
 // Description returns the model-facing prompt text for this tool.
 func (t *Tool) Description(_ context.Context) string {
-	return "Read the contents of a file at the given path. Returns the file contents as text."
+	return "Read a file and return its contents as text."
 }
 
 // InputSchema returns the JSON schema for ReadFile's input struct.
