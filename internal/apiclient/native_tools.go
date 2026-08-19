@@ -39,14 +39,23 @@ import (
 // instructions that were the model's only way to learn about its tools: every
 // tool call would vanish, silently, against production.
 //
-// There is no server-capability endpoint to probe for (2), so it is an
-// explicit opt-in — KORAI_NATIVE_TOOLS=1 — defaulting OFF. Flip the default
-// here once the orchestrator ships native tools and the fleet has rolled over;
-// that is a one-line change and this comment is the note to do it.
+// (2) used to be unanswerable, so native calling sat behind an explicit
+// opt-in defaulting OFF. It is answerable now: the orchestrator reports
+// supports_tools on ALIASES as well as canonical ids, computed from the same
+// fleet view the tools path routes over. An alias answering true means a tools
+// request through it will not be refused — which is exactly question (2).
 //
-// Everything unknown falls back to the fence: probe failed, model absent from
-// the listing, orchestrator too old to report the field, opt-in unset. The
-// fence works everywhere; native tools work only on a new enough stack.
+// So the probe is the gate, and native is the default. An orchestrator too old
+// to report the field on aliases yields no answer, which reads as "cannot",
+// and the fence is used — the same outcome the opt-in used to force, reached
+// automatically instead of by configuration.
+//
+// KORAI_NATIVE_TOOLS=0 remains as an opt-OUT: a way to pin a session to the
+// fence without downgrading, for a model whose tool template misbehaves.
+//
+// Everything unknown still falls back to the fence: probe failed, model absent
+// from the listing, orchestrator too old to report the field. The fence works
+// everywhere; native tools work only on a new enough stack.
 
 // toolMode is the resolved tool dialect for one request.
 type toolMode int
@@ -77,19 +86,21 @@ type toolCapabilities struct {
 	probed bool
 }
 
-// nativeToolsEnvVar opts this client into native tool calling. See the package
-// note above: the model-side capability is probed, but the server-side one
-// cannot be, so it is opt-in until the orchestrator ships it.
+// nativeToolsEnvVar is the opt-OUT for native tool calling. Native is the
+// default now that the orchestrator answers the server-side question via
+// supports_tools on aliases (see the package note above); this exists so a
+// session can be pinned to the fence without downgrading the binary.
 const nativeToolsEnvVar = "KORAI_NATIVE_TOOLS"
 
-// nativeToolsEnabled reports the opt-in. Anything other than "1"/"true" is off,
-// including unset — the safe default is the dialect that works everywhere.
+// nativeToolsEnabled reports whether native tool calling may be used at all.
+// It does NOT decide the dialect on its own — the capability probe still has to
+// agree. Only an explicit falsey value disables native; unset means enabled.
 func nativeToolsEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(nativeToolsEnvVar))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
+	case "0", "false", "no", "off":
 		return false
+	default:
+		return true
 	}
 }
 
@@ -97,8 +108,7 @@ func nativeToolsEnabled() bool {
 // error: a probe failure is indistinguishable, for our purposes, from a model
 // that cannot do tools, and both must land on the fence path.
 func (tc *toolCapabilities) resolve(ctx context.Context, inner *korai.Client, model string) toolMode {
-	// Cheapest gate first, and the one that keeps us safe against a production
-	// orchestrator that cannot carry tools yet. Also skips the probe entirely.
+	// Cheapest gate first: an explicit opt-out skips the probe entirely.
 	if !nativeToolsEnabled() {
 		return toolModeFence
 	}
@@ -298,4 +308,21 @@ func toolInputMap(raw json.RawMessage) (map[string]any, error) {
 		return nil, fmt.Errorf("input is not a JSON object: %w", err)
 	}
 	return m, nil
+}
+
+// hasToolHistory reports whether a conversation already contains tool calls or
+// results. Such a turn must resolve the dialect even if it carries no tools
+// itself: replaying that history as fence text when the previous turn was sent
+// natively (or the reverse) would show the model two different accounts of what
+// it just did.
+func hasToolHistory(msgs []Message) bool {
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			switch b.(type) {
+			case ToolCallBlock, ToolResultBlock:
+				return true
+			}
+		}
+	}
+	return false
 }

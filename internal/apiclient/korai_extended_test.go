@@ -19,6 +19,17 @@ func captureServer(t *testing.T) (*httptest.Server, *[]map[string]any) {
 	t.Helper()
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Serve the capability probe separately and do NOT record it. A request
+		// carrying tools asks /v1/models whether the model can call them
+		// natively; that is a GET with no body, so capturing it here would both
+		// trip the "body is not JSON" check and shift every bodies[] index.
+		// Reporting no tool support keeps these tests on the fence dialect,
+		// which is what they are about.
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"auto","object":"model"}]}`))
+			return
+		}
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read body: %v", err)

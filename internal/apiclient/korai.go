@@ -68,7 +68,14 @@ func (c *KoraiClient) Complete(ctx context.Context, req Request) (<-chan Event, 
 
 	// One decision, read by both the builder and the reader below. Resolved
 	// before anything is built so the two can never disagree about dialect.
-	mode := c.tools.resolve(ctx, c.inner, model)
+	//
+	// Only worth asking when tools are actually in play. A turn with no tools
+	// and no tool history renders identically either way, so probing would buy
+	// nothing and cost a /v1/models round trip on every plain completion.
+	mode := toolModeFence
+	if len(req.Tools) > 0 || hasToolHistory(req.Messages) {
+		mode = c.tools.resolve(ctx, c.inner, model)
+	}
 
 	var chatReq korai.ChatRequest
 	var err error

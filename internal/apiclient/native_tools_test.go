@@ -7,11 +7,13 @@ import (
 	"testing"
 )
 
-// resolve() consults the opt-in before anything else, so every capability test
-// must set it. Uses t.Setenv, which restores the previous value on cleanup.
+// resolve() consults the opt-OUT before anything else. Native is the default,
+// but a developer running the suite with KORAI_NATIVE_TOOLS=0 in their
+// environment would otherwise see these tests fail for the wrong reason, so
+// pin it explicitly. t.Setenv restores the previous value on cleanup.
 func enableNativeTools(t *testing.T) {
 	t.Helper()
-	t.Setenv(nativeToolsEnvVar, "1")
+	t.Setenv(nativeToolsEnvVar, "")
 }
 
 func schema(t *testing.T, s string) json.RawMessage {
@@ -259,25 +261,59 @@ func TestToolCapabilities_UnknownFallsBackToFence(t *testing.T) {
 	}
 }
 
-// The server-side gate. supports_tools describes the MODEL; it is already true
-// for the current ladder while the deployed orchestrator still drops `tools`.
-// Without this gate the CLI would go native against production, sending tools
-// nothing reads and omitting the fence instructions the model needs — every
-// tool call would silently vanish.
-func TestNativeToolsRequireTheOptIn(t *testing.T) {
+// Native is the default; KORAI_NATIVE_TOOLS is an opt-OUT that pins a session
+// to the fence without downgrading the binary. The capability probe still has
+// to agree — the env var can only ever disable, never force.
+func TestNativeToolsDefaultOnWithOptOut(t *testing.T) {
 	tc := &toolCapabilities{byID: map[string]bool{"m": true}, probed: true}
 	tc.once.Do(func() {})
 
 	t.Setenv(nativeToolsEnvVar, "")
-	if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeFence {
-		t.Errorf("opt-in unset: got %v, want fence even though the model supports tools", got)
-	}
-	t.Setenv(nativeToolsEnvVar, "0")
-	if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeFence {
-		t.Errorf("opt-in=0: got %v, want fence", got)
-	}
-	t.Setenv(nativeToolsEnvVar, "1")
 	if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeNative {
-		t.Errorf("opt-in=1 with a tool-capable model: got %v, want native", got)
+		t.Errorf("unset: got %v, want native — native is the default now", got)
+	}
+	for _, off := range []string{"0", "false", "no", "off", "OFF"} {
+		t.Setenv(nativeToolsEnvVar, off)
+		if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeFence {
+			t.Errorf("KORAI_NATIVE_TOOLS=%q: got %v, want fence", off, got)
+		}
+	}
+
+	// The opt-out cannot FORCE native: a model the orchestrator says cannot
+	// call tools stays on the fence however the variable is set. This is what
+	// keeps an old orchestrator (which reports nothing for aliases) safe.
+	noTools := &toolCapabilities{byID: map[string]bool{"m": false}, probed: true}
+	noTools.once.Do(func() {})
+	t.Setenv(nativeToolsEnvVar, "1")
+	if got := noTools.resolve(context.TODO(), nil, "m"); got != toolModeFence {
+		t.Errorf("model reports no tool support: got %v, want fence regardless of the env var", got)
+	}
+}
+
+// A plain completion must not fire the capability probe. Native being the
+// default made every request resolve the dialect, which added a /v1/models
+// round trip to turns that have no tools and render identically either way —
+// caught by the extended-sampling tests counting two requests where they
+// expected one.
+func TestNoToolsMeansNoProbe(t *testing.T) {
+	if hasToolHistory([]Message{
+		{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		{Role: RoleAssistant, Content: []ContentBlock{TextBlock{Text: "hello"}}},
+	}) {
+		t.Error("a plain conversation must not report tool history")
+	}
+	if !hasToolHistory([]Message{
+		{Role: RoleAssistant, Content: []ContentBlock{
+			ToolCallBlock{ID: "c1", Name: "read"},
+		}},
+	}) {
+		t.Error("an assistant turn with a tool call is tool history")
+	}
+	if !hasToolHistory([]Message{
+		{Role: RoleUser, Content: []ContentBlock{
+			ToolResultBlock{ToolCallID: "c1", Content: "ok"},
+		}},
+	}) {
+		t.Error("a tool result is tool history")
 	}
 }
