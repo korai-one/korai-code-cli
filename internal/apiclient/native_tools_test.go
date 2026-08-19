@@ -1,6 +1,7 @@
 package apiclient
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -242,18 +243,18 @@ func TestToolCapabilities_UnknownFallsBackToFence(t *testing.T) {
 
 	tc := newProbed(map[string]bool{"has-tools": true, "no-tools": false}, true)
 
-	if got := tc.resolve(nil, nil, "has-tools"); got != toolModeNative {
+	if got := tc.resolve(context.TODO(), nil, "has-tools"); got != toolModeNative {
 		t.Errorf("has-tools = %v, want native", got)
 	}
-	if got := tc.resolve(nil, nil, "no-tools"); got != toolModeFence {
+	if got := tc.resolve(context.TODO(), nil, "no-tools"); got != toolModeFence {
 		t.Errorf("no-tools = %v, want fence", got)
 	}
-	if got := tc.resolve(nil, nil, "never-heard-of-it"); got != toolModeFence {
+	if got := tc.resolve(context.TODO(), nil, "never-heard-of-it"); got != toolModeFence {
 		t.Errorf("unlisted model = %v, want fence", got)
 	}
 
 	unprobed := newProbed(nil, false) // probe failed: once spent, probed false
-	if got := unprobed.resolve(nil, nil, "anything"); got != toolModeFence {
+	if got := unprobed.resolve(context.TODO(), nil, "anything"); got != toolModeFence {
 		t.Errorf("failed probe = %v, want fence", got)
 	}
 }
@@ -268,15 +269,15 @@ func TestNativeToolsRequireTheOptIn(t *testing.T) {
 	tc.once.Do(func() {})
 
 	t.Setenv(nativeToolsEnvVar, "")
-	if got := tc.resolve(nil, nil, "m"); got != toolModeFence {
+	if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeFence {
 		t.Errorf("opt-in unset: got %v, want fence even though the model supports tools", got)
 	}
 	t.Setenv(nativeToolsEnvVar, "0")
-	if got := tc.resolve(nil, nil, "m"); got != toolModeFence {
+	if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeFence {
 		t.Errorf("opt-in=0: got %v, want fence", got)
 	}
 	t.Setenv(nativeToolsEnvVar, "1")
-	if got := tc.resolve(nil, nil, "m"); got != toolModeNative {
+	if got := tc.resolve(context.TODO(), nil, "m"); got != toolModeNative {
 		t.Errorf("opt-in=1 with a tool-capable model: got %v, want native", got)
 	}
 }
