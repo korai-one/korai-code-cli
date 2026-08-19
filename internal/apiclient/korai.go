@@ -16,20 +16,29 @@ import (
 // this package boundary: everything is converted to apiclient's own types at
 // the edge.
 //
-// Tool use: Korai hosts open-weight models that are not trained for OpenAI
-// structured tool calls, and the whole Korai stack — the orchestrator's tool
-// loop and the local worker alike — uses a prompt-based text-fence dialect
-// instead (<tool:NAME>{json}</tool>). This client therefore translates at the
-// boundary (see fence.go): tool schemas are rendered into the system prompt as
-// fence instructions, conversation history's structured tool calls/results are
-// replayed as fence text, and the model's reply is parsed back into our
-// structured ToolCallStart / ToolCallComplete events. The engine above never
-// knows; it speaks structured tool calls throughout. Complete uses the buffered
-// ChatComplete path (real token usage, whole-reply fence parsing); if a backend
-// ever does return structured ToolCalls they are honored as a fallback.
+// Tool use: two dialects, chosen per request by capability probe. Models that
+// report supports_tools take the NATIVE path — a real OpenAI `tools` array,
+// structured tool_calls on the way back (see native_tools.go). Everything else
+// takes the historical FENCE path, where schemas are rendered into the system
+// prompt and <tool:NAME>{json}</tool> is parsed back out of the reply text
+// (see fence.go). The fence remains the fallback for older orchestrators and
+// for models without a tool-call template, so it is not going away.
+//
+// Either way the engine above never knows: it speaks structured tool calls
+// throughout, and this package converts at the edge. No korai.* type crosses
+// this boundary.
+//
+// The dialects are strictly exclusive per request. A model told about its
+// tools twice answers in both, and runBuffered honours structured calls over
+// fences — silently dropping the fence ones. So the mode is resolved once, up
+// front, and the request builder and the response reader both obey it.
+//
+// Complete uses the buffered ChatComplete path (real token usage, whole-reply
+// parsing).
 type KoraiClient struct {
 	inner *korai.Client
 	model string
+	tools toolCapabilities
 }
 
 // NewKoraiClient creates a client authenticated with apiKey against baseURL.
@@ -48,7 +57,26 @@ func NewKoraiClient(apiKey, baseURL, model string) *KoraiClient {
 // buffered completion, and adapts the response into our Event channel. See the
 // type doc for why this is buffered rather than streamed.
 func (c *KoraiClient) Complete(ctx context.Context, req Request) (<-chan Event, error) {
-	chatReq, err := c.buildChatRequest(req)
+	model := c.model
+	if req.Model != "" {
+		model = req.Model
+	}
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 8096
+	}
+
+	// One decision, read by both the builder and the reader below. Resolved
+	// before anything is built so the two can never disagree about dialect.
+	mode := c.tools.resolve(ctx, c.inner, model)
+
+	var chatReq korai.ChatRequest
+	var err error
+	if mode == toolModeNative {
+		chatReq, err = c.buildNativeChatRequest(req, model, maxTokens)
+	} else {
+		chatReq, err = c.buildChatRequest(req, model, maxTokens)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
@@ -56,7 +84,7 @@ func (c *KoraiClient) Complete(ctx context.Context, req Request) (<-chan Event, 
 	ch := make(chan Event, 64)
 	go func() {
 		defer close(ch)
-		c.runBuffered(ctx, chatReq, req, ch)
+		c.runBuffered(ctx, chatReq, req, mode, ch)
 	}()
 	return ch, nil
 }
@@ -68,7 +96,11 @@ func (c *KoraiClient) Complete(ctx context.Context, req Request) (<-chan Event, 
 // call, then a final MessageCompleteEvent carrying real usage. Sends are
 // blocking and honour ctx so a cancelled turn stops promptly without dropping
 // events.
-func (c *KoraiClient) runBuffered(ctx context.Context, chatReq korai.ChatRequest, req Request, ch chan<- Event) {
+//
+// mode is the tool dialect resolved for this request (see native_tools.go). It
+// decides whether the reply text is run through the fence parser: in native
+// mode it must NOT be, or prose that merely mentions "<tool:" is eaten.
+func (c *KoraiClient) runBuffered(ctx context.Context, chatReq korai.ChatRequest, req Request, mode toolMode, ch chan<- Event) {
 	var resp *korai.ChatResponse
 	var err error
 	if needsExtendedRequest(req) {
@@ -88,11 +120,17 @@ func (c *KoraiClient) runBuffered(ctx context.Context, chatReq korai.ChatRequest
 	choice := resp.Choices[0]
 	msg := choice.Message
 
-	// Korai text models return tool calls as <tool:NAME>{json}</tool> fences in
-	// the reply text, not structured ToolCalls. Strip the fences from the text
-	// and surface them as structured tool-call events. The cleaned text (the
-	// model's prose around the fences) is emitted first so the UI shows it.
-	cleanText, fences := parseToolFences(msg.Content)
+	// Fence mode: tool calls arrive as <tool:NAME>{json}</tool> inside the reply
+	// text, so strip them out and surface them as structured events. Native
+	// mode must NOT run the fence parser: the text is the model's prose, and a
+	// model that legitimately writes "<tool:" while explaining itself would
+	// have that silently eaten. The cleaned text is emitted first so the UI
+	// shows the model's words before any tool activity.
+	var fences []fenceCall
+	cleanText := msg.Content
+	if mode == toolModeFence {
+		cleanText, fences = parseToolFences(msg.Content)
+	}
 	if cleanText != "" {
 		if !sendKorai(ctx, ch, TextDeltaEvent{Text: cleanText}) {
 			return
@@ -151,20 +189,13 @@ func sendKorai(ctx context.Context, ch chan<- Event, e Event) bool {
 	}
 }
 
-// buildChatRequest converts our Request into a korai.ChatRequest.
-func (c *KoraiClient) buildChatRequest(req Request) (korai.ChatRequest, error) {
+// buildChatRequest converts our Request into a korai.ChatRequest using the
+// fence dialect. model and maxTokens are resolved by the caller, which needs
+// the model to pick the dialect in the first place.
+func (c *KoraiClient) buildChatRequest(req Request, model string, maxTokens int64) (korai.ChatRequest, error) {
 	msgs, err := convertToKoraiMessages(req.Messages)
 	if err != nil {
 		return korai.ChatRequest{}, fmt.Errorf("converting messages: %w", err)
-	}
-
-	model := c.model
-	if req.Model != "" {
-		model = req.Model
-	}
-	maxTokens := req.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 8096
 	}
 
 	system := req.System

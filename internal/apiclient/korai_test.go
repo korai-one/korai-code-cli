@@ -24,7 +24,7 @@ func TestBuildChatRequestSystemAsMessage(t *testing.T) {
 		System:   "BASE PROMPT",
 		Messages: []Message{{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}}},
 		Tools:    []ToolDef{{Name: "read_file", InputSchema: json.RawMessage(`{"type":"object"}`)}},
-	})
+	}, "auto", 8096)
 	if err != nil {
 		t.Fatalf("buildChatRequest: %v", err)
 	}
