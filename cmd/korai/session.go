@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"github.com/Nevaero/korai-code-cli/internal/memory"
 	"github.com/Nevaero/korai-code-cli/internal/perm"
 	"github.com/Nevaero/korai-code-cli/internal/prompt"
+	"github.com/Nevaero/korai-code-cli/internal/proto"
 	"github.com/Nevaero/korai-code-cli/internal/session"
 	"github.com/Nevaero/korai-code-cli/internal/skill"
 	"github.com/Nevaero/korai-code-cli/internal/snapshot"
@@ -96,6 +98,9 @@ type assembled struct {
 	initialHistory []apiclient.Message
 	saver          func(id string, created time.Time, msgs []apiclient.Message)
 	resumeLoad     func(id string) ([]apiclient.Message, time.Time, error)
+	// sessionsList answers the serve protocol's sessions_list message: saved
+	// sessions as structured summaries, optionally filtered to a cwd.
+	sessionsList func(cwd string, limit int) ([]proto.SessionSummary, error)
 
 	// activeSyncInterval is the cadence at which the long-running loops (TUI,
 	// serve) re-persist the open conversation so the background syncer pushes it
@@ -374,6 +379,17 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		} else if syncer != nil {
 			go syncer.Run(ctx)
 			slog.Info("cross-device history sync enabled", "interval", syncCfg.Interval)
+			// Run's first Sync happens at startup, before this process has saved
+			// anything; the conversation this run produces is only written on the
+			// turn/save path, which lands after that. A one-shot invocation
+			// (`korai -p ...`) exits well before the next tick, so without a flush
+			// here the session just created would only reach the hub on this
+			// device's NEXT invocation — every device permanently one session
+			// behind its own outbound history. ctx is already cancelled by the time
+			// closers run on Ctrl-C/SIGTERM, which would make a flush on ctx a
+			// silent no-op on exactly the path that matters, so this uses its own
+			// short-lived context instead.
+			closers = append(closers, syncFlushCloser(syncer, syncCfg.SyncID))
 		}
 		// The long-running loops re-persist the open conversation on this cadence
 		// so the syncer sweeps it up before the turn that ends it. Only meaningful
@@ -396,6 +412,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 			return nil, time.Time{}, err
 		}
 		return session.FromCanonicalMessages(sess.Messages), sess.Created, nil
+	}
+	sessionsList := func(cwd string, limit int) ([]proto.SessionSummary, error) {
+		return listSessionSummaries(sessStore, cwd, limit)
 	}
 
 	return &assembled{
@@ -427,6 +446,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 		initialHistory: initialHistory,
 		saver:          saver,
 		resumeLoad:     resumeLoad,
+		sessionsList:   sessionsList,
 
 		activeSyncInterval: activeSyncInterval,
 
@@ -510,6 +530,33 @@ const defaultActiveSyncInterval = 3 * time.Minute
 // minActiveSyncInterval clamps overly aggressive checkpointing so a misconfigured
 // value cannot hammer the store or the hub.
 const minActiveSyncInterval = 15 * time.Second
+
+// finalSyncTimeout bounds the shutdown sync flush so an unreachable or slow hub
+// cannot hang process exit.
+const finalSyncTimeout = 5 * time.Second
+
+// syncFlushCloser returns an assembled.closers entry that runs one final Sync
+// against a fresh, short-lived context — not ctx, which is already cancelled by
+// the time closers run on Ctrl-C/SIGTERM, making a flush against it a silent
+// no-op on exactly the shutdown path this exists for. A flush failure never
+// changes the exit path: it is logged at warn and the closer still returns nil,
+// matching how Run treats a failed tick as retryable rather than fatal.
+// ErrNamespaceNuked is not a normal failure (Run stops the loop on it without
+// logging a generic warning), so it gets its own message instead of "failed".
+func syncFlushCloser(syncer *synchub.Syncer, syncID string) func() error {
+	return func() error {
+		fctx, cancel := context.WithTimeout(context.Background(), finalSyncTimeout)
+		defer cancel()
+		if err := syncer.Sync(fctx); err != nil {
+			if errors.Is(err, synchub.ErrNamespaceNuked) {
+				slog.Warn("namespace nuked; skipping final sync flush", "sync_id", syncID)
+			} else {
+				slog.Warn("final sync flush failed", "error", err)
+			}
+		}
+		return nil
+	}
+}
 
 // resolveActiveSyncInterval picks the active-session checkpoint cadence:
 // KORAI_SYNC_ACTIVE_INTERVAL wins, then the config sync.activeSyncInterval field,
@@ -610,24 +657,90 @@ func formatSessions(store sdksession.Store, wd string) string {
 	return b.String()
 }
 
-// firstUserText returns a short snippet of the first user message in a stored
-// canonical session.
-func firstUserText(msgs []korai.SessionMessage) string {
+// firstUserRawText returns the untruncated text of the first user message with
+// text content in a stored canonical session, or "" if there is none.
+func firstUserRawText(msgs []korai.SessionMessage) string {
 	for _, m := range msgs {
 		if m.Role != string(apiclient.RoleUser) {
 			continue
 		}
 		for _, blk := range m.Blocks {
 			if tb, ok := blk.(korai.TextBlock); ok && strings.TrimSpace(tb.Text) != "" {
-				s := strings.TrimSpace(tb.Text)
-				if len(s) > 50 {
-					s = s[:50] + "…"
-				}
-				return s
+				return strings.TrimSpace(tb.Text)
 			}
 		}
 	}
 	return ""
+}
+
+// firstUserText returns a short snippet of the first user message in a stored
+// canonical session, for /resume's text listing.
+func firstUserText(msgs []korai.SessionMessage) string {
+	s := firstUserRawText(msgs)
+	if len(s) > 50 {
+		s = s[:50] + "…"
+	}
+	return s
+}
+
+// sessionTitleMaxLen bounds the derived title in the "sessions" event: long
+// enough to be useful in a session picker, short enough to fit one line.
+const sessionTitleMaxLen = 60
+
+// sessionTitle derives a single-line display label for a saved session from its
+// first user message: internal whitespace (including newlines) collapsed to a
+// single space, then trimmed to sessionTitleMaxLen bytes.
+func sessionTitle(msgs []korai.SessionMessage) string {
+	s := strings.Join(strings.Fields(firstUserRawText(msgs)), " ")
+	if len(s) > sessionTitleMaxLen {
+		s = s[:sessionTitleMaxLen] + "…"
+	}
+	return s
+}
+
+// sessionsDefaultLimit is how many sessions the sessions_list message returns
+// when the client omits (or zeroes) Limit.
+const sessionsDefaultLimit = 50
+
+// sessionsMaxLimit bounds sessions_list's Limit so a misbehaving client cannot
+// force an unbounded response.
+const sessionsMaxLimit = 200
+
+// listSessionSummaries returns saved sessions as the "sessions" event's wire
+// shape, most-recently-updated first (store.List's contract), optionally
+// filtered to cwd, and capped at limit (<=0 uses sessionsDefaultLimit; above
+// sessionsMaxLimit is clamped to it).
+func listSessionSummaries(store sdksession.Store, cwd string, limit int) ([]proto.SessionSummary, error) {
+	sessions, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case limit <= 0:
+		limit = sessionsDefaultLimit
+	case limit > sessionsMaxLimit:
+		limit = sessionsMaxLimit
+	}
+	out := make([]proto.SessionSummary, 0, len(sessions))
+	for _, s := range sessions {
+		if cwd != "" && s.CWD != cwd {
+			continue
+		}
+		out = append(out, proto.SessionSummary{
+			ID:           s.ID,
+			Created:      s.Created.Format(time.RFC3339),
+			Updated:      s.Updated.Format(time.RFC3339),
+			CWD:          s.CWD,
+			Model:        s.Model,
+			Tool:         s.Tool,
+			Title:        sessionTitle(s.Messages),
+			MessageCount: len(s.Messages),
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // aboutText is the message shown by /about: version and a one-line description.

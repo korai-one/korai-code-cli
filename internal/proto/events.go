@@ -37,6 +37,12 @@ const (
 	// resume or clear). The client keys its conversation by this id so the
 	// client-side history and the engine's session stay reconciled.
 	TypeSession = "session"
+	// TypeSessions lists saved sessions as structured data, answering a
+	// SessionsList message.
+	TypeSessions = "sessions"
+	// TypeResumed reports a saved session was loaded into the connection's
+	// history, answering a SessionsResume message.
+	TypeResumed = "resumed"
 )
 
 // ServerEvent is any message the server sends to the client. The marker method
@@ -140,6 +146,47 @@ type SessionEvent struct {
 // Sess builds a SessionEvent. (Named Sess to avoid colliding with the field.)
 func Sess(id string) SessionEvent { return SessionEvent{Type: TypeSession, ID: id} }
 
+// SessionSummary describes one saved session for the sessions list — enough for
+// a client to render a picker without loading the full conversation. Created
+// and Updated are RFC3339.
+type SessionSummary struct {
+	ID           string `json:"id"`
+	Created      string `json:"created"`
+	Updated      string `json:"updated"`
+	CWD          string `json:"cwd"`
+	Model        string `json:"model"`
+	Tool         string `json:"tool"`
+	Title        string `json:"title"`
+	MessageCount int    `json:"messageCount"`
+}
+
+// SessionsEvent lists saved sessions, most-recently-updated first, answering a
+// SessionsList message.
+type SessionsEvent struct {
+	Type     string           `json:"type"`
+	Sessions []SessionSummary `json:"sessions"`
+}
+
+// Sessions builds a SessionsEvent.
+func Sessions(sessions []SessionSummary) SessionsEvent {
+	return SessionsEvent{Type: TypeSessions, Sessions: sessions}
+}
+
+// ResumedEvent reports a saved session was loaded into the connection's
+// history, answering a SessionsResume message. Messages carries the session's
+// canonical, block-tagged form (role + typed blocks) as raw JSON, so this
+// stdlib-only package need not depend on the session/SDK types to shuttle it.
+type ResumedEvent struct {
+	Type     string            `json:"type"`
+	ID       string            `json:"id"`
+	Messages []json.RawMessage `json:"messages"`
+}
+
+// Resumed builds a ResumedEvent.
+func Resumed(id string, messages []json.RawMessage) ResumedEvent {
+	return ResumedEvent{Type: TypeResumed, ID: id, Messages: messages}
+}
+
 func (TextEvent) isServerEvent()       {}
 func (ToolStartEvent) isServerEvent()  {}
 func (ToolResultEvent) isServerEvent() {}
@@ -148,6 +195,8 @@ func (CompactEvent) isServerEvent()    {}
 func (ErrorEvent) isServerEvent()      {}
 func (DoneEvent) isServerEvent()       {}
 func (SessionEvent) isServerEvent()    {}
+func (SessionsEvent) isServerEvent()   {}
+func (ResumedEvent) isServerEvent()    {}
 
 // Client→server message type tags.
 const (
@@ -159,6 +208,12 @@ const (
 	TypeSlash = "slash"
 	// TypeAbort cancels the in-flight turn.
 	TypeAbort = "abort"
+	// TypeSessionsList requests the saved-session list as structured data (see
+	// SessionsEvent), optionally filtered to a working directory.
+	TypeSessionsList = "sessions_list"
+	// TypeSessionsResume loads a saved session into the connection's history,
+	// replacing whatever is there now (see ResumedEvent).
+	TypeSessionsResume = "sessions_resume"
 )
 
 // ClientMsg is any message the client sends to the server. A single struct
@@ -170,8 +225,15 @@ type ClientMsg struct {
 	Text string `json:"text,omitempty"`
 	// Cmd is the slash command name without its leading slash (Slash).
 	Cmd string `json:"cmd,omitempty"`
-	// ID is the permission request being answered (PermRes).
+	// ID is the permission request being answered (PermRes), or the session id
+	// to load (SessionsResume).
 	ID string `json:"id,omitempty"`
 	// Approved is the answer to a permission request (PermRes).
 	Approved bool `json:"approved,omitempty"`
+	// Cwd filters the session list to one working directory (SessionsList);
+	// empty returns sessions for every directory.
+	Cwd string `json:"cwd,omitempty"`
+	// Limit caps how many sessions SessionsList returns; 0 uses the server
+	// default.
+	Limit int `json:"limit,omitempty"`
 }

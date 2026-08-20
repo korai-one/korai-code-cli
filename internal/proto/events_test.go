@@ -53,6 +53,27 @@ func TestServerEventJSON(t *testing.T) {
 			event: proto.Done(),
 			want:  map[string]any{"type": "done"},
 		},
+		{
+			name: "sessions",
+			event: proto.Sessions([]proto.SessionSummary{
+				{ID: "s-1", Created: "2026-01-01T00:00:00Z", Updated: "2026-01-02T00:00:00Z",
+					CWD: "/work", Model: "auto", Tool: "korai-code-cli", Title: "fix the bug", MessageCount: 4},
+			}),
+			want: map[string]any{"type": "sessions", "sessions": []any{
+				map[string]any{
+					"id": "s-1", "created": "2026-01-01T00:00:00Z", "updated": "2026-01-02T00:00:00Z",
+					"cwd": "/work", "model": "auto", "tool": "korai-code-cli", "title": "fix the bug",
+					"messageCount": float64(4),
+				},
+			}},
+		},
+		{
+			name:  "resumed",
+			event: proto.Resumed("s-1", []json.RawMessage{[]byte(`{"role":"user","blocks":[{"kind":"text","text":"hi"}]}`)}),
+			want: map[string]any{"type": "resumed", "id": "s-1", "messages": []any{
+				map[string]any{"role": "user", "blocks": []any{map[string]any{"kind": "text", "text": "hi"}}},
+			}},
+		},
 	}
 
 	for _, tc := range tests {
@@ -99,6 +120,21 @@ func TestClientMsgUnmarshal(t *testing.T) {
 			name: "abort",
 			raw:  `{"type":"abort"}`,
 			want: proto.ClientMsg{Type: "abort"},
+		},
+		{
+			name: "sessions_list",
+			raw:  `{"type":"sessions_list","cwd":"/work","limit":10}`,
+			want: proto.ClientMsg{Type: "sessions_list", Cwd: "/work", Limit: 10},
+		},
+		{
+			name: "sessions_list bare",
+			raw:  `{"type":"sessions_list"}`,
+			want: proto.ClientMsg{Type: "sessions_list"},
+		},
+		{
+			name: "sessions_resume",
+			raw:  `{"type":"sessions_resume","id":"s-1"}`,
+			want: proto.ClientMsg{Type: "sessions_resume", ID: "s-1"},
 		},
 	}
 

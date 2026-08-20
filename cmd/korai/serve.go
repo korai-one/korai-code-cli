@@ -319,7 +319,14 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case proto.TypeAbort:
 			abort()
-		case proto.TypeMessage, proto.TypeSlash:
+		case proto.TypeSessionsList:
+			list, lerr := s.sess.sessionsList(msg.Cwd, msg.Limit)
+			if lerr != nil {
+				_ = send(proto.Error("listing sessions: " + lerr.Error()))
+				continue
+			}
+			_ = send(proto.Sessions(list))
+		case proto.TypeMessage, proto.TypeSlash, proto.TypeSessionsResume:
 			select {
 			case actions <- msg:
 			default:
@@ -403,6 +410,21 @@ func (s *server) worker(
 				if submit != "" && !runTurn(submit) {
 					return
 				}
+			case proto.TypeSessionsResume:
+				id, msgs, created, rerr := s.resumeSession(act.ID)
+				if rerr != nil {
+					_ = send(proto.Error(rerr.Error()))
+					continue
+				}
+				raw, merr := marshalCanonicalMessages(msgs)
+				if merr != nil {
+					_ = send(proto.Error("encoding resumed session: " + merr.Error()))
+					continue
+				}
+				history = msgs
+				sessionID = id
+				sessionStart = created
+				_ = send(proto.Resumed(id, raw))
 			}
 		case <-tickC:
 			if len(history) > 0 {
@@ -493,6 +515,42 @@ func (s *server) runSlash(
 		_ = send(proto.Done())
 		return "", false
 	}
+}
+
+// resumeSession loads a saved session for a sessions_resume message: the
+// trimmed id, its history, and its creation time. Unlike the /resume slash
+// command's ResumeSession action — which binds to the requested id even on a
+// load failure, so a client-originated conversation id always gets a home —
+// this returns an error, so a client that explicitly asked to resume a session
+// finds out the id was bad instead of silently landing in an empty one under
+// that id. Both paths load through the same s.sess.resumeLoad the TUI uses.
+func (s *server) resumeSession(rawID string) (id string, history []apiclient.Message, created time.Time, err error) {
+	id = strings.TrimSpace(rawID)
+	if id == "" {
+		return "", nil, time.Time{}, errors.New("resume requires a session id")
+	}
+	history, created, err = s.sess.resumeLoad(id)
+	if err != nil {
+		return "", nil, time.Time{}, fmt.Errorf("unknown session %s", id)
+	}
+	return id, history, created, nil
+}
+
+// marshalCanonicalMessages renders history in the canonical, block-tagged JSON
+// a ResumedEvent carries — the same shape sessions are stored and teleported in
+// (see internal/session's adapter) — so a client that already understands
+// canonical blocks needs no separate decoder for a resumed conversation.
+func marshalCanonicalMessages(history []apiclient.Message) ([]json.RawMessage, error) {
+	canon := session.ToCanonicalMessages(history)
+	raw := make([]json.RawMessage, len(canon))
+	for i, m := range canon {
+		data, err := json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+		raw[i] = data
+	}
+	return raw, nil
 }
 
 // userMessage wraps raw text as a user-role message.
