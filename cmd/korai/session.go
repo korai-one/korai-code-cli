@@ -483,6 +483,23 @@ func openSyncedStore(ctx context.Context, home string, fs synchub.FileSettings) 
 	if syncErr != nil {
 		slog.Warn("sync configuration ignored", "error", syncErr)
 	}
+	// The hub requires a Korai account (a free one is enough). Resolve does not
+	// supply it: the account token is a short-lived, refreshable credential
+	// owned by the auth layer, unlike the content key that package loads
+	// itself. Without one every request is refused, so disable sync here and
+	// say why ONCE, rather than letting the syncer log a 401 on every tick.
+	// Staying local is the documented behaviour without an account, not a
+	// failure — hence a single warn and a working session.
+	if syncCfg.Enabled {
+		bearer, berr := resolveBearer(ctx, home, orchestratorBaseURL())
+		if berr != nil || strings.TrimSpace(bearer) == "" {
+			slog.Warn("history sync needs a Korai account; staying local on this device " +
+				"(a free account is enough)")
+			syncCfg.Enabled = false
+		} else {
+			syncCfg.AccountToken = bearer
+		}
+	}
 	var syncCodec sdksession.Codec
 	if syncCfg.Enabled {
 		if c, cerr := sdksession.NewEncryptingCodec(syncCfg.Key); cerr == nil {
