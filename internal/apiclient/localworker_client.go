@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -106,6 +108,33 @@ func (c *LocalWorkerClient) Complete(ctx context.Context, req Request) (<-chan E
 	return ch, nil
 }
 
+// handshakeTimeout bounds the Hello/Ready exchange. A worker that accepts the
+// connection and then says nothing must not wedge the CLI.
+const handshakeTimeout = 10 * time.Second
+
+// streamIdleTimeout bounds the gap BETWEEN frames once a turn is running.
+// Deliberately an idle timeout rather than a total-turn budget: a long
+// generation is legitimate and keeps producing frames, while a worker that has
+// stopped talking produces nothing. A socket read does not observe context
+// cancellation, so without a deadline this loop blocks forever — which is how
+// `korai -p --local` came to hang with no output and no error at all.
+const streamIdleTimeout = 2 * time.Minute
+
+// deadliner is the part of net.Conn needed to bound reads. The dialer hands
+// back a net.Conn, but the field is typed io.ReadWriteCloser, so this is
+// asserted rather than assumed: a transport that cannot set deadlines still
+// works, it just does not get the bound.
+type deadliner interface {
+	SetReadDeadline(t time.Time) error
+}
+
+// setReadDeadline applies d to conn when the transport supports it.
+func setReadDeadline(conn io.ReadWriteCloser, d time.Duration) {
+	if dl, ok := conn.(deadliner); ok {
+		_ = dl.SetReadDeadline(time.Now().Add(d))
+	}
+}
+
 // ensureConn dials (once) and performs the Hello/Ready handshake.
 func (c *LocalWorkerClient) ensureConn(ctx context.Context) error {
 	c.mu.Lock()
@@ -117,6 +146,8 @@ func (c *LocalWorkerClient) ensureConn(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Bound the handshake. pump resets the deadline per frame for the turn.
+	setReadDeadline(conn, handshakeTimeout)
 	reader := bufio.NewReader(conn)
 	if err := localproto.WriteJSON(conn, localproto.FrameHello, localproto.HelloPayload{Version: localproto.ProtocolVersion, Token: c.token}); err != nil {
 		_ = conn.Close()
@@ -224,10 +255,25 @@ func (c *LocalWorkerClient) pump(ctx context.Context, ch chan<- Event) {
 	}
 
 	for {
+		// Reset the idle budget before every frame: progress refreshes it, so
+		// only actual silence trips it.
+		c.mu.Lock()
+		if c.conn != nil {
+			setReadDeadline(c.conn, streamIdleTimeout)
+		}
+		c.mu.Unlock()
+
 		ft, body, err := localproto.ReadFrame(c.reader)
 		if err != nil {
 			c.dropConn()
 			if sending {
+				if os.IsTimeout(err) {
+					err = fmt.Errorf(
+						"no frame for %s (the worker stopped responding; "+
+							"unset KORAI_LOCAL_WORKER_DIRECT to use the HTTP endpoint): %w",
+						streamIdleTimeout, err,
+					)
+				}
 				deliver(ErrorEvent{Err: fmt.Errorf("local worker stream: %w", err)})
 			}
 			return
