@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	korai "github.com/korai-one/korai-sdk-go"
@@ -47,6 +50,61 @@ type KoraiClient struct {
 // (auto / fast / balanced / deep) or a canonical worker model id.
 func NewKoraiClient(apiKey, baseURL, model string) *KoraiClient {
 	opts := []korai.ClientOption{korai.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		opts = append(opts, korai.WithBaseURL(baseURL))
+	}
+	return &KoraiClient{inner: korai.New(opts...), model: model}
+}
+
+// defaultLocalTimeout bounds one buffered completion against a CO-LOCATED
+// worker. The SDK's 60 s default is sized for a hosted endpoint that starts
+// answering immediately; Complete is buffered, so a local worker sends no
+// response headers until the whole reply is decoded. A 27B thinking model on
+// consumer hardware runs at tens of tokens/second, so a single turn passes 60 s
+// routinely and the CLI failed with "Client.Timeout exceeded while awaiting
+// headers" — or, on the direct channel, hung with no deadline at all.
+//
+// Sized from measurement, not guesswork: a short prompt against a GPU-offloaded
+// 27B answers end-to-end in ~1.8 s. Two minutes is ~60x that — room for a long
+// agent turn on slower hardware — while still surfacing a wedged worker as an
+// error the user can act on instead of a frozen terminal.
+//
+// The 60 s that broke this was not absurd; it was simply the SDK's hosted-
+// endpoint default applied to a local one. When a local turn does run long,
+// the usual cause is the engine falling back to CPU (llama.cpp without
+// KORAI_LLAMA_SERVER_BIN pointing at the accelerated build processes prompts
+// at ~9 tok/s instead of ~1500), and no timeout value fixes that.
+const defaultLocalTimeout = 2 * time.Minute
+
+// localTimeout is defaultLocalTimeout unless KORAI_LOCAL_WORKER_TIMEOUT
+// overrides it (any duration Go can parse, e.g. "90s", "5m"). An unparseable
+// or non-positive value falls back to the default rather than disabling the
+// bound, since "0" reads as "no timeout" and that is the failure we are here
+// to remove.
+func localTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("KORAI_LOCAL_WORKER_TIMEOUT"))
+	if raw == "" {
+		return defaultLocalTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultLocalTimeout
+	}
+	return d
+}
+
+// NewLocalWorkerHTTPClient creates a client for a co-located worker's loopback
+// OpenAI-HTTP endpoint. token, when non-empty, is sent as
+// `Authorization: Bearer` — the worker gates /v1/* as soon as it binds
+// anywhere off loopback (which is how a sandboxed session reaches it).
+//
+// Identical to NewKoraiClient except for the timeout, which is sized for local
+// generation instead of a hosted endpoint. See defaultLocalTimeout.
+func NewLocalWorkerHTTPClient(token, baseURL, model string) *KoraiClient {
+	opts := []korai.ClientOption{
+		korai.WithAPIKey(token),
+		korai.WithHTTPClient(&http.Client{Timeout: localTimeout()}),
+	}
 	if baseURL != "" {
 		opts = append(opts, korai.WithBaseURL(baseURL))
 	}

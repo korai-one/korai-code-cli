@@ -39,6 +39,15 @@ type Info struct {
 	Models []string `json:"models,omitempty"`
 	// Started is when the worker began listening (RFC 3339).
 	Started time.Time `json:"started,omitempty"`
+	// APIToken is the bearer required on the worker's HTTP endpoint (/v1/*).
+	// Empty means the endpoint is open, which the worker only permits while it
+	// is bound to loopback; it gates itself the moment it binds anywhere a
+	// container or another machine could reach.
+	//
+	// Distinct from the token that authorises the direct binary channel and
+	// POST /control/shutdown: this one only buys inference, so something
+	// allowed to spend the GPU cannot also stop the worker.
+	APIToken string `json:"apiToken,omitempty"`
 }
 
 // Path returns the well-known advertisement file: ~/.korai/local-worker.json.
@@ -82,7 +91,7 @@ func Discover(ctx context.Context, client *http.Client) (Info, bool) {
 	if !ok {
 		return Info{}, false
 	}
-	if !healthy(ctx, client, info.URL) {
+	if !healthy(ctx, client, info.URL, info.APIToken) {
 		return Info{}, false
 	}
 	return info, true
@@ -90,7 +99,13 @@ func Discover(ctx context.Context, client *http.Client) (Info, bool) {
 
 // healthy reports whether baseURL/health answers 200 with an ok status, the
 // worker's liveness signal. Any transport error or non-ok body means no.
-func healthy(ctx context.Context, client *http.Client, baseURL string) bool {
+//
+// token is sent when non-empty. /health is ungated on today's workers — it
+// carries only liveness — but a probe that cannot authenticate would report a
+// perfectly good gated worker as absent, and the caller reads that as "fall
+// back to the network". Sending the bearer costs nothing and removes the
+// failure mode.
+func healthy(ctx context.Context, client *http.Client, baseURL, token string) bool {
 	if client == nil {
 		client = &http.Client{Timeout: healthTimeout}
 	}
@@ -100,6 +115,9 @@ func healthy(ctx context.Context, client *http.Client, baseURL string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/health", nil)
 	if err != nil {
 		return false
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -117,7 +135,9 @@ func healthy(ctx context.Context, client *http.Client, baseURL string) bool {
 // should use the direct binary channel (the local fast path): Network is "unix"
 // for a co-located worker socket or "tcp" for a home/LAN inference server, and
 // Address is the socket path or host:port. Otherwise it uses the loopback
-// OpenAI-HTTP URL. Token authenticates the tcp channel.
+// OpenAI-HTTP URL. Token authenticates EITHER transport: presented in the
+// Hello frame on tcp, and as `Authorization: Bearer` on the HTTP URL. Empty
+// means the endpoint is ungated.
 type Endpoint struct {
 	Network string
 	Address string
@@ -135,25 +155,57 @@ func (e Endpoint) IsDirect() bool { return e.Network != "" }
 // Otherwise an advertised same-machine worker is used only if a probe passes,
 // preferring the direct Unix socket over the HTTP URL. It returns ok=false when
 // none applies, meaning the caller should use the networked Korai backend.
+//
+// token authenticates BOTH transports. For an explicit endpoint it is the
+// caller's (KORAI_LOCAL_WORKER_TOKEN); for a discovered one the advert's
+// apiToken is used instead, since the worker chose that secret itself and the
+// operator has nothing to pass. Leaving the HTTP endpoint tokenless was a
+// silent 401: the worker gates /v1/* as soon as it binds off loopback, which
+// is exactly what a sandboxed session needs it to do.
 func Resolve(ctx context.Context, explicitURL, explicitAddr, token string, client *http.Client) (Endpoint, bool) {
 	if a := strings.TrimSpace(explicitAddr); a != "" {
 		return Endpoint{Network: "tcp", Address: a, Token: token}, true
 	}
 	if e := strings.TrimSpace(explicitURL); e != "" {
-		return Endpoint{URL: strings.TrimRight(e, "/")}, true
+		// An operator-supplied URL may well point at a gated worker (that is
+		// how a container reaches one), so carry their token through.
+		return Endpoint{URL: strings.TrimRight(e, "/"), Token: token}, true
 	}
 	info, ok := Read()
 	if !ok {
 		return Endpoint{}, false
 	}
-	// Prefer the direct socket when advertised and its handshake succeeds.
-	if info.Socket != "" && socketHealthy(ctx, "unix", info.Socket, "") {
+	// HTTP first. The direct binary channel is a latency optimisation, and it
+	// was preferred automatically — which made it the default path on every
+	// machine that advertised a socket, including ones where it does not
+	// work. Its handshake probe passed and the turn then hung with no
+	// deadline, so the CLI looked frozen rather than failing over. An
+	// optimisation that can hang must be asked for, not assumed.
+	if DirectOptIn() && info.Socket != "" && socketHealthy(ctx, "unix", info.Socket, "") {
 		return Endpoint{Network: "unix", Address: info.Socket}, true
 	}
-	if info.URL != "" && healthy(ctx, client, info.URL) {
-		return Endpoint{URL: strings.TrimRight(info.URL, "/")}, true
+	if info.URL != "" && healthy(ctx, client, info.URL, info.APIToken) {
+		return Endpoint{URL: strings.TrimRight(info.URL, "/"), Token: info.APIToken}, true
 	}
+	// No socket fallback when the HTTP probe fails. Falling back would put the
+	// turn back on the channel that can hang with no deadline, which is what
+	// made this look frozen in the first place; declining here means the
+	// caller uses the network and says so. Read() already guarantees a
+	// non-empty URL, so "socket-only worker" is not a reachable state.
 	return Endpoint{}, false
+}
+
+// DirectOptIn reports whether the caller asked for the direct binary channel
+// (KORAI_LOCAL_WORKER_DIRECT=1). Env rather than a flag: the local-worker
+// surface already carries three flags, and this is a tuning knob, not
+// something a user picks per run.
+func DirectOptIn() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("KORAI_LOCAL_WORKER_DIRECT"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // socketHealthy reports whether a localproto worker is live at network/address

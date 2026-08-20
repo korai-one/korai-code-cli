@@ -105,9 +105,13 @@ func TestResolveExplicitNoProbe(t *testing.T) {
 	}
 }
 
-// TestResolvePrefersSocket: when the advert carries a reachable socket, Resolve
-// prefers it over the HTTP URL. Skips if the platform can't bind a unix socket.
-func TestResolvePrefersSocket(t *testing.T) {
+// TestResolveSocketOnlyWhenOptedIn: a reachable socket is used only when
+// KORAI_LOCAL_WORKER_DIRECT asks for it. It used to win automatically, which
+// made an optimisation the default path everywhere — including machines where
+// the turn then hung with no deadline, so the CLI looked frozen instead of
+// falling back. Skips if the platform can't bind a unix socket.
+func TestResolveSocketOnlyWhenOptedIn(t *testing.T) {
+	t.Setenv("KORAI_LOCAL_WORKER_DIRECT", "1")
 	home := setHome(t)
 	sockPath := filepath.Join(home, "w.sock")
 	ln, err := net.Listen("unix", sockPath)
@@ -141,6 +145,26 @@ func TestResolvePrefersSocket(t *testing.T) {
 	ep, ok := Resolve(context.Background(), "", "", "", nil)
 	if !ok || !ep.IsDirect() || ep.Network != "unix" || ep.Address != sockPath {
 		t.Fatalf("expected unix socket endpoint %q, got %+v ok=%v", sockPath, ep, ok)
+	}
+
+	// Without the opt-in the SAME advert must take the HTTP path. The URL here
+	// is unreachable, so Resolve declines entirely rather than silently using
+	// the socket — which is the behaviour change this test exists to pin.
+	t.Setenv("KORAI_LOCAL_WORKER_DIRECT", "")
+	if ep, ok := Resolve(context.Background(), "", "", "", nil); ok {
+		t.Fatalf("socket used without opt-in: %+v", ep)
+	}
+}
+
+// TestResolveDeclinesWhenHTTPUnreachable: with no opt-in and an unreachable
+// HTTP endpoint, Resolve declines instead of falling back to the socket. The
+// caller then uses the network and says so, rather than putting the turn on a
+// channel that can hang.
+func TestResolveDeclinesWhenHTTPUnreachable(t *testing.T) {
+	home := setHome(t)
+	writeAdvert(t, home, "http://127.0.0.1:1")
+	if ep, ok := Resolve(context.Background(), "", "", "", nil); ok {
+		t.Fatalf("resolved an unreachable worker: %+v", ep)
 	}
 }
 

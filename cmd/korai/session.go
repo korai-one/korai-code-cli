@@ -257,7 +257,7 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 			localClient = apiclient.NewLocalWorkerClient(endpoint.Address, model)
 		default:
 			// Co-located worker exposing only the loopback OpenAI-HTTP endpoint.
-			localClient = apiclient.NewKoraiClient("", endpoint.URL, model)
+			localClient = apiclient.NewLocalWorkerHTTPClient(endpoint.Token, endpoint.URL, model)
 		}
 	}
 	// The networked backend is resolved best-effort so /worker_mode can switch to
