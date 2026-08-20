@@ -90,11 +90,11 @@ func TestWipeShredsPurgesAndCallsRemote(t *testing.T) {
 	// PostNuke sets the nuke marker + soft-deletes in one txn, superseding the
 	// old unsigned DELETE.
 	var nukeCalled bool
-	var gotAuth, gotPubkey, gotSig string
+	var gotNamespace, gotPubkey, gotSig string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/sync/nuke" {
 			nukeCalled = true
-			gotAuth = r.Header.Get("Authorization")
+			gotNamespace = r.Header.Get("X-Korai-Sync-Id")
 			gotPubkey = r.Header.Get("X-Korai-Sync-Pubkey")
 			gotSig = r.Header.Get("X-Korai-Sync-Sig")
 		}
@@ -103,7 +103,7 @@ func TestWipeShredsPurgesAndCallsRemote(t *testing.T) {
 	defer srv.Close()
 
 	// Capture the expected bearer before Wipe zeroizes the key.
-	wantBearer := "Bearer " + synckey.DeriveSyncID(key)
+	wantNamespace := synckey.DeriveSyncID(key)
 	client := synchub.NewClient(srv.URL, synckey.DeriveSyncID(key), key, srv.Client())
 	report := synckey.Wipe(context.Background(), key, synckey.DefaultWipePaths(home, project), client.PostNuke)
 
@@ -134,8 +134,11 @@ func TestWipeShredsPurgesAndCallsRemote(t *testing.T) {
 	if !nukeCalled {
 		t.Error("hub POST /v1/sync/nuke was not called")
 	}
-	if gotAuth != wantBearer {
-		t.Errorf("bearer header = %q, want %q", gotAuth, wantBearer)
+	// The namespace rides X-Korai-Sync-Id; Authorization carries the Korai
+	// account the hub requires. Two headers, so the hub can verify the account
+	// per request and discard it without recording who owns which namespace.
+	if gotNamespace != wantNamespace {
+		t.Errorf("namespace header = %q, want %q", gotNamespace, wantNamespace)
 	}
 	// The nuke is signed with K_folder (attack-model T5/T11): both write-signature
 	// headers must be present, else a bearer-only sender could forge a fleet wipe.

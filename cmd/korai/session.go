@@ -389,6 +389,9 @@ func assemble(ctx context.Context, opts runOptions, planApprover plantool.Approv
 			// closers run on Ctrl-C/SIGTERM, which would make a flush on ctx a
 			// silent no-op on exactly the path that matters, so this uses its own
 			// short-lived context instead.
+			//nolint:contextcheck // Detaching from ctx is the point, not an
+			// oversight: closers run AFTER ctx is cancelled, so propagating it
+			// would make the flush a guaranteed no-op.
 			closers = append(closers, syncFlushCloser(syncer, syncCfg.SyncID))
 		}
 		// The long-running loops re-persist the open conversation on this cadence
