@@ -7,16 +7,16 @@
 package tools
 
 import (
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools/applypatch"
-	"github.com/Nevaero/korai-code-cli/internal/tools/bash"
-	"github.com/Nevaero/korai-code-cli/internal/tools/edit"
-	"github.com/Nevaero/korai-code-cli/internal/tools/glob"
-	"github.com/Nevaero/korai-code-cli/internal/tools/grep"
-	"github.com/Nevaero/korai-code-cli/internal/tools/readfile"
-	"github.com/Nevaero/korai-code-cli/internal/tools/repomap"
-	"github.com/Nevaero/korai-code-cli/internal/tools/webfetch"
-	"github.com/Nevaero/korai-code-cli/internal/tools/write"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tools/applypatch"
+	"github.com/korai-one/korai-code-cli/internal/tools/bash"
+	"github.com/korai-one/korai-code-cli/internal/tools/edit"
+	"github.com/korai-one/korai-code-cli/internal/tools/glob"
+	"github.com/korai-one/korai-code-cli/internal/tools/grep"
+	"github.com/korai-one/korai-code-cli/internal/tools/readfile"
+	"github.com/korai-one/korai-code-cli/internal/tools/repomap"
+	"github.com/korai-one/korai-code-cli/internal/tools/webfetch"
+	"github.com/korai-one/korai-code-cli/internal/tools/write"
 )
 
 // RegisterAll registers every built-in tool into r.

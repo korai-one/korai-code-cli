@@ -10,7 +10,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/perm"
 )
 
 // Tool is the contract every agent-invokable action implements.

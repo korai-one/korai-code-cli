@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // modelsServer serves a canned GET /v1/models body.

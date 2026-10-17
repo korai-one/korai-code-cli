@@ -13,8 +13,8 @@ import (
 
 	"github.com/invopop/jsonschema"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // Spawner runs a sub-agent to completion and returns its final text output.

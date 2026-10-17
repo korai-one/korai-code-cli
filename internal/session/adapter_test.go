@@ -11,8 +11,8 @@ import (
 	korai "github.com/korai-one/korai-sdk-go"
 	sdksession "github.com/korai-one/korai-sdk-go/session"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/session"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/session"
 )
 
 // sampleMessages is a conversation exercising every apiclient content-block

@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/command"
 )
 
 func TestRevertCommand(t *testing.T) {

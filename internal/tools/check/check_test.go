@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools/check"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tools/check"
 )
 
 // passCmd returns a shell command that exits 0 on the test's platform.

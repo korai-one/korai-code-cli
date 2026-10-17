@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/memory"
+	"github.com/korai-one/korai-code-cli/internal/memory"
 )
 
 var update = flag.Bool("update", false, "update golden files")

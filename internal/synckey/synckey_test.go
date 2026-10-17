@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/synckey"
+	"github.com/korai-one/korai-code-cli/internal/synckey"
 )
 
 // TestGenerateSaveLoadRoundTrip verifies a generated key persists and reloads

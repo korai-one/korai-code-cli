@@ -10,9 +10,9 @@ import (
 
 	"github.com/invopop/jsonschema"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	repomapcore "github.com/Nevaero/korai-code-cli/internal/repomap"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	repomapcore "github.com/korai-one/korai-code-cli/internal/repomap"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // Input is the structured input for the RepoMap tool.

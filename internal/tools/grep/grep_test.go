@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools/grep"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tools/grep"
 )
 
 // setupTree builds a hermetic directory tree under t.TempDir() and returns its

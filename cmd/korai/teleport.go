@@ -11,8 +11,8 @@ import (
 
 	korai "github.com/korai-one/korai-sdk-go"
 
-	"github.com/Nevaero/korai-code-cli/internal/config"
-	"github.com/Nevaero/korai-code-cli/internal/session"
+	"github.com/korai-one/korai-code-cli/internal/config"
+	"github.com/korai-one/korai-code-cli/internal/session"
 )
 
 // teleportCmd resumes a conversation that started on ANOTHER Korai surface. It is

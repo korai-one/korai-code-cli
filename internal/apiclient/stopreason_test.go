@@ -3,7 +3,7 @@ package apiclient_test
 import (
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 func TestNormalizeStopReason(t *testing.T) {

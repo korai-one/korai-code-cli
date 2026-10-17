@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // fakeReferencer is a stub Referencer for testing the tool without a real server.

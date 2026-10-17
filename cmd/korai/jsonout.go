@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Nevaero/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/engine"
 )
 
 // Output format identifiers for the headless --print mode. "text" streams the

@@ -3,8 +3,8 @@ package tui
 import (
 	"context"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/engine"
 )
 
 // Runner is the slice of the engine the TUI depends on: start a turn and

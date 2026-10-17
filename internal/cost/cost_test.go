@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/cost"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/cost"
 )
 
 func TestTrackerTotals(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/command"
 )
 
 //go:embed builtins/*.md

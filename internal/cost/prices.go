@@ -1,6 +1,6 @@
 package cost
 
-import "github.com/Nevaero/korai-code-cli/internal/apiclient"
+import "github.com/korai-one/korai-code-cli/internal/apiclient"
 
 // price is USD per one million tokens.
 type price struct {

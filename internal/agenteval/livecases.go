@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools/edit"
-	"github.com/Nevaero/korai-code-cli/internal/tools/readfile"
-	"github.com/Nevaero/korai-code-cli/internal/tools/write"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tools/edit"
+	"github.com/korai-one/korai-code-cli/internal/tools/readfile"
+	"github.com/korai-one/korai-code-cli/internal/tools/write"
 )
 
 // BuiltinLiveScenarios is the default live smoke set: three small, unambiguous

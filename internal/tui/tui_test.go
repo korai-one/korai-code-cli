@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/exp/teatest/v2"
 
-	"github.com/Nevaero/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/engine"
 )
 
 // TestREPLEndToEnd drives the full Bubble Tea loop with a scripted runner:

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/compact"
 )
 
 // sizerClient is a fake backend that implements apiclient.ContextSizer.

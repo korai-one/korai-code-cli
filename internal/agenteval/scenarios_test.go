@@ -11,16 +11,16 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/agenteval"
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	memstore "github.com/Nevaero/korai-code-cli/internal/memory"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools/edit"
-	memtool "github.com/Nevaero/korai-code-cli/internal/tools/memory"
-	"github.com/Nevaero/korai-code-cli/internal/tools/readfile"
+	"github.com/korai-one/korai-code-cli/internal/agenteval"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	memstore "github.com/korai-one/korai-code-cli/internal/memory"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tools/edit"
+	memtool "github.com/korai-one/korai-code-cli/internal/tools/memory"
+	"github.com/korai-one/korai-code-cli/internal/tools/readfile"
 )
 
 var update = flag.Bool("update", false, "update golden transcript files")

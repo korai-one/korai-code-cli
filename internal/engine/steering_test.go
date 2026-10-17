@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // TestEnqueueDrainMergesIntoTrailingUser checks queued steer text is appended to

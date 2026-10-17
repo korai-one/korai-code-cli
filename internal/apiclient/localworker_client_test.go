@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/localproto"
+	"github.com/korai-one/korai-code-cli/internal/localproto"
 )
 
 // fakeWorker scripts a worker's north endpoint over a net.Pipe. reply is invoked

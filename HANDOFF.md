@@ -164,7 +164,7 @@ verification are inherently serial. Optimize for a dogfoodable MVP, then iterate
 
 Do these in order. Each step must leave the build green.
 
-1. `go mod init github.com/Nevaero/korai-code-cli` (Go 1.23+).
+1. `go mod init github.com/korai-one/korai-code-cli` (Go 1.23+).
 2. Create the **layout**: `cmd/korai/`, `internal/{engine,tool,tools,perm,apiclient,mcp,context,config,tui}/`, `testdata/`.
 3. Write the **`Makefile`** with the `check` target (gofmt -l, goimports -l, build,
    vet, golangci-lint run, `go test -race ./...`) and add `.golangci.yml`

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	plantool "github.com/korai-one/korai-code-cli/internal/tools/plan"
 )
 
 type fakeApprover struct {

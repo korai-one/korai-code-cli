@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/perm"
 )
 
 func TestResolve(t *testing.T) {

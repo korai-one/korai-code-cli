@@ -5,7 +5,7 @@ import (
 
 	"github.com/sahilm/fuzzy"
 
-	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/command"
 )
 
 // maxMenuRows is the most slash-command suggestions shown at once; longer lists

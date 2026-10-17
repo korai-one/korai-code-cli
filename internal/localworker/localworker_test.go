@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/localproto"
+	"github.com/korai-one/korai-code-cli/internal/localproto"
 )
 
 // setHome points os.UserHomeDir at a temp dir for the duration of a test, on

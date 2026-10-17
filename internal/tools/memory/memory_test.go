@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	store "github.com/Nevaero/korai-code-cli/internal/memory"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	memtool "github.com/Nevaero/korai-code-cli/internal/tools/memory"
+	store "github.com/korai-one/korai-code-cli/internal/memory"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	memtool "github.com/korai-one/korai-code-cli/internal/tools/memory"
 )
 
 func TestExecuteSuccess(t *testing.T) {

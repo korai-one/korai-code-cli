@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Nevaero/korai-code-cli/internal/localproto"
+	"github.com/korai-one/korai-code-cli/internal/localproto"
 )
 
 // Info is the advertisement a local worker writes to Path on startup. It is the

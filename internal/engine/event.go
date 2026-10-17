@@ -7,8 +7,8 @@ package engine
 import (
 	"encoding/json"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // Event is emitted by Engine.Run on its output channel.

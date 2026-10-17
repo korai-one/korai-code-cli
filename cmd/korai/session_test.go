@@ -13,7 +13,7 @@ import (
 	sdksession "github.com/korai-one/korai-sdk-go/session"
 	"github.com/korai-one/korai-sdk-go/session/synchub"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // saveWithTimes writes a session to store and pins its file's mtime to when,

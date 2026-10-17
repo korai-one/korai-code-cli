@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 func TestModelSelector(t *testing.T) {

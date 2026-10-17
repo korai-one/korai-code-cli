@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // Tracker accumulates token usage per model. It is safe for concurrent use: the
