@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/perm"
 )
 
 // permRequest pairs a permission request with the channel its decision is

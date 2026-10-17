@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // TestExecuteAddAndUpdate drives the tool end-to-end: an Add and an Update in

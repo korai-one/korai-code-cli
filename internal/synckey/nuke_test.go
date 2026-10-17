@@ -12,7 +12,7 @@ import (
 
 	"github.com/korai-one/korai-sdk-go/session/synchub"
 
-	"github.com/Nevaero/korai-code-cli/internal/synckey"
+	"github.com/korai-one/korai-code-cli/internal/synckey"
 )
 
 // readFile is a small test helper that reads a whole file as a string.

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/proto"
-	"github.com/Nevaero/korai-code-cli/internal/wsasker"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/proto"
+	"github.com/korai-one/korai-code-cli/internal/wsasker"
 )
 
 // TestAskApproved verifies Ask emits a perm_req and returns DecisionAllow once

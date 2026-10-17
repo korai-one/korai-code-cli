@@ -21,14 +21,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/command"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
-	"github.com/Nevaero/korai-code-cli/internal/cost"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/snapshot"
-	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/cost"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/snapshot"
+	plantool "github.com/korai-one/korai-code-cli/internal/tools/plan"
 )
 
 type entryKind int

@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/condense"
+	"github.com/korai-one/korai-code-cli/internal/condense"
 )
 
 func TestApply(t *testing.T) {

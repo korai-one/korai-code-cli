@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // fakeDiagnoser is a stub Diagnoser for testing the tool without a real server.

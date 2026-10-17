@@ -22,10 +22,10 @@
 package agenteval
 
 import (
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // Call is one scripted tool call within a Turn. Input is the literal JSON body

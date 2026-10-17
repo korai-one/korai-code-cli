@@ -5,10 +5,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	plantool "github.com/korai-one/korai-code-cli/internal/tools/plan"
 )
 
 // engineEventMsg carries one engine event plus the channel it came from, so the

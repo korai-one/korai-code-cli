@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // scriptClient implements apiclient.Client by replaying scripted turns keyed by

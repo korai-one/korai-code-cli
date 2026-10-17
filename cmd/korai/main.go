@@ -15,11 +15,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tui"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tui"
 )
 
 // version is the Korai CLI version, shown by --version and the TUI welcome

@@ -1,4 +1,4 @@
-module github.com/Nevaero/korai-code-cli
+module github.com/korai-one/korai-code-cli
 
 go 1.26
 

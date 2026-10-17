@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/hook"
+	"github.com/korai-one/korai-code-cli/internal/hook"
 )
 
 func TestFireBlocking(t *testing.T) {

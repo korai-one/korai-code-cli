@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/todo"
+	"github.com/korai-one/korai-code-cli/internal/todo"
 )
 
 func TestSetAndItems(t *testing.T) {

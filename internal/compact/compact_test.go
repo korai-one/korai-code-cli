@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/compact"
 )
 
 // fakeClient returns a fixed summary, recording the request it received.

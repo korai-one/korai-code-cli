@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/proto"
+	"github.com/korai-one/korai-code-cli/internal/proto"
 )
 
 // TestServerEventJSON checks each server event marshals to the agreed wire

@@ -339,4 +339,4 @@ run environment.
 - When you touch a tool, keep its logic/validation/permission consistent.
 - Run `make check` before every commit; never commit red.
 - Develop on the designated feature branch; `origin` is
-  `github.com/korai-one/korai-code-cli` (the Go module path is `Nevaero/korai-code-cli`).
+  `github.com/korai-one/korai-code-cli` (the Go module path matches the repository).

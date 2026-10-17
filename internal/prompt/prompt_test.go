@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/prompt"
+	"github.com/korai-one/korai-code-cli/internal/prompt"
 )
 
 func TestComposeWithoutContext(t *testing.T) {

@@ -15,8 +15,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Nevaero/korai-code-cli/internal/agenteval"
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/agenteval"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // evalCmd builds the `korai eval` subcommand. It is skipped (exit 0) unless an

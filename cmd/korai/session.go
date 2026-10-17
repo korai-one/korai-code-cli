@@ -18,35 +18,35 @@ import (
 	sdksession "github.com/korai-one/korai-sdk-go/session"
 	"github.com/korai-one/korai-sdk-go/session/synchub"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/command"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
-	"github.com/Nevaero/korai-code-cli/internal/condense"
-	"github.com/Nevaero/korai-code-cli/internal/config"
-	appctx "github.com/Nevaero/korai-code-cli/internal/context"
-	"github.com/Nevaero/korai-code-cli/internal/cost"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/hook"
-	"github.com/Nevaero/korai-code-cli/internal/localworker"
-	"github.com/Nevaero/korai-code-cli/internal/lsp"
-	"github.com/Nevaero/korai-code-cli/internal/mcp"
-	"github.com/Nevaero/korai-code-cli/internal/memory"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/prompt"
-	"github.com/Nevaero/korai-code-cli/internal/proto"
-	"github.com/Nevaero/korai-code-cli/internal/session"
-	"github.com/Nevaero/korai-code-cli/internal/skill"
-	"github.com/Nevaero/korai-code-cli/internal/snapshot"
-	todostore "github.com/Nevaero/korai-code-cli/internal/todo"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	"github.com/Nevaero/korai-code-cli/internal/tools"
-	agenttool "github.com/Nevaero/korai-code-cli/internal/tools/agent"
-	checktool "github.com/Nevaero/korai-code-cli/internal/tools/check"
-	diagnosticstool "github.com/Nevaero/korai-code-cli/internal/tools/diagnostics"
-	memtool "github.com/Nevaero/korai-code-cli/internal/tools/memory"
-	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
-	referencestool "github.com/Nevaero/korai-code-cli/internal/tools/references"
-	todotool "github.com/Nevaero/korai-code-cli/internal/tools/todo"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/condense"
+	"github.com/korai-one/korai-code-cli/internal/config"
+	appctx "github.com/korai-one/korai-code-cli/internal/context"
+	"github.com/korai-one/korai-code-cli/internal/cost"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/hook"
+	"github.com/korai-one/korai-code-cli/internal/localworker"
+	"github.com/korai-one/korai-code-cli/internal/lsp"
+	"github.com/korai-one/korai-code-cli/internal/mcp"
+	"github.com/korai-one/korai-code-cli/internal/memory"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/prompt"
+	"github.com/korai-one/korai-code-cli/internal/proto"
+	"github.com/korai-one/korai-code-cli/internal/session"
+	"github.com/korai-one/korai-code-cli/internal/skill"
+	"github.com/korai-one/korai-code-cli/internal/snapshot"
+	todostore "github.com/korai-one/korai-code-cli/internal/todo"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tools"
+	agenttool "github.com/korai-one/korai-code-cli/internal/tools/agent"
+	checktool "github.com/korai-one/korai-code-cli/internal/tools/check"
+	diagnosticstool "github.com/korai-one/korai-code-cli/internal/tools/diagnostics"
+	memtool "github.com/korai-one/korai-code-cli/internal/tools/memory"
+	plantool "github.com/korai-one/korai-code-cli/internal/tools/plan"
+	referencestool "github.com/korai-one/korai-code-cli/internal/tools/references"
+	todotool "github.com/korai-one/korai-code-cli/internal/tools/todo"
 )
 
 // assembled is the wired-up session: everything the engine needs, plus the
@@ -766,7 +766,7 @@ func listSessionSummaries(store sdksession.Store, cwd string, limit int) ([]prot
 // aboutText is the message shown by /about: version and a one-line description.
 func aboutText() string {
 	return fmt.Sprintf(
-		"Korai Code CLI %s\nAI coding agent on the Korai P2P inference network.\nhttps://github.com/Nevaero/korai-code-cli",
+		"Korai Code CLI %s\nAI coding agent on the Korai P2P inference network.\nhttps://github.com/korai-one/korai-code-cli",
 		version,
 	)
 }

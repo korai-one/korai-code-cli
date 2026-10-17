@@ -11,7 +11,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // clientName/clientVersion identify Korai to MCP servers during the handshake.

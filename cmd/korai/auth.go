@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Nevaero/korai-code-cli/internal/auth"
-	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/auth"
+	"github.com/korai-one/korai-code-cli/internal/command"
 )
 
 // loginTimeout caps a whole interactive login (browser round-trip or device-code

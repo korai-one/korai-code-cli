@@ -7,10 +7,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	store "github.com/Nevaero/korai-code-cli/internal/todo"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
-	todotool "github.com/Nevaero/korai-code-cli/internal/tools/todo"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	store "github.com/korai-one/korai-code-cli/internal/todo"
+	"github.com/korai-one/korai-code-cli/internal/tool"
+	todotool "github.com/korai-one/korai-code-cli/internal/tools/todo"
 )
 
 func TestExecuteSuccess(t *testing.T) {

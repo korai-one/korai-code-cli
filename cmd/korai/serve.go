@@ -19,15 +19,15 @@ import (
 	"github.com/coder/websocket"
 	"github.com/spf13/cobra"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/command"
-	"github.com/Nevaero/korai-code-cli/internal/compact"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/proto"
-	"github.com/Nevaero/korai-code-cli/internal/session"
-	"github.com/Nevaero/korai-code-cli/internal/wsasker"
-	"github.com/Nevaero/korai-code-cli/internal/wsevent"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/compact"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/proto"
+	"github.com/korai-one/korai-code-cli/internal/session"
+	"github.com/korai-one/korai-code-cli/internal/wsasker"
+	"github.com/korai-one/korai-code-cli/internal/wsevent"
 )
 
 // shutdownGrace bounds how long Serve waits for in-flight connections to drain

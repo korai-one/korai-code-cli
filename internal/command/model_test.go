@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/command"
 )
 
 // fakeSelector is an in-memory command.Selector for tests.

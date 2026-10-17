@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/command"
 )
 
 func TestCostCommand(t *testing.T) {

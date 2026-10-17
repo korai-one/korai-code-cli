@@ -17,9 +17,9 @@ import (
 
 	"github.com/invopop/jsonschema"
 
-	"github.com/Nevaero/korai-code-cli/internal/editmatch"
-	"github.com/Nevaero/korai-code-cli/internal/perm"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/editmatch"
+	"github.com/korai-one/korai-code-cli/internal/perm"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // lspDiagnosticsTimeout bounds how long a write waits for the language server to

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/synckey"
+	"github.com/korai-one/korai-code-cli/internal/synckey"
 )
 
 // TestMnemonicRoundTrip verifies a key encodes to 24 words and decodes back

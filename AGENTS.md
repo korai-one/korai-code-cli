@@ -33,7 +33,7 @@ surrounding code and ask the coordinator — do not invent a new pattern.
 
 ## 1. Repository & module layout
 
-- **Module path:** `github.com/Nevaero/korai-code-cli`
+- **Module path:** `github.com/korai-one/korai-code-cli`
 - **Binary name:** `korai`
 - **Go version:** 1.23+ (uses `log/slog`, range-over-func, modern stdlib). Pinned in `go.mod`.
 - **Layout** (standard Go; `internal/` prevents accidental external coupling):

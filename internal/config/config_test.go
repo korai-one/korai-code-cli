@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/config"
+	"github.com/korai-one/korai-code-cli/internal/config"
 )
 
 func TestDefaults(t *testing.T) {

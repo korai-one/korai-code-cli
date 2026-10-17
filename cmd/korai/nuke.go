@@ -11,8 +11,8 @@ import (
 
 	"github.com/korai-one/korai-sdk-go/session/synchub"
 
-	"github.com/Nevaero/korai-code-cli/internal/config"
-	"github.com/Nevaero/korai-code-cli/internal/synckey"
+	"github.com/korai-one/korai-code-cli/internal/config"
+	"github.com/korai-one/korai-code-cli/internal/synckey"
 )
 
 // errNukeRejected is returned when the entered code does not match the verifier.

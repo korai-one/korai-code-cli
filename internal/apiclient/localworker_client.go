@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Nevaero/korai-code-cli/internal/localproto"
+	"github.com/korai-one/korai-code-cli/internal/localproto"
 )
 
 // LocalWorkerClient implements Client against a co-located Korai worker over the

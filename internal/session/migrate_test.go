@@ -11,7 +11,7 @@ import (
 	sdksession "github.com/korai-one/korai-sdk-go/session"
 	_ "modernc.org/sqlite"
 
-	"github.com/Nevaero/korai-code-cli/internal/session"
+	"github.com/korai-one/korai-code-cli/internal/session"
 )
 
 // legacySchema is the sessions table as an SDK version predating the `tool`

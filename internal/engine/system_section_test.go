@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
-	"github.com/Nevaero/korai-code-cli/internal/engine"
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/engine"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // TestSystemSectionPerTurnVisibility verifies the dynamic system-section seam:

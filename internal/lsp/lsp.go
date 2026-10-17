@@ -24,7 +24,7 @@ import (
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/charmbracelet/x/powernap/pkg/registry"
 
-	"github.com/Nevaero/korai-code-cli/internal/csync"
+	"github.com/korai-one/korai-code-cli/internal/csync"
 )
 
 const publishDiagnosticsMethod = "textDocument/publishDiagnostics"

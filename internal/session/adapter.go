@@ -18,7 +18,7 @@ import (
 
 	korai "github.com/korai-one/korai-sdk-go"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 // Tool identifies conversations this CLI produces, stamped into the canonical

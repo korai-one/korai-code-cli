@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Nevaero/korai-code-cli/internal/apiclient"
+	"github.com/korai-one/korai-code-cli/internal/apiclient"
 )
 
 func TestAtToken(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/Nevaero/korai-code-cli/internal/command"
-	"github.com/Nevaero/korai-code-cli/internal/skill"
+	"github.com/korai-one/korai-code-cli/internal/command"
+	"github.com/korai-one/korai-code-cli/internal/skill"
 )
 
 // writeFile writes content to name inside dir, failing the test on error.

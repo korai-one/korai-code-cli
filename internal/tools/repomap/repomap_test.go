@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Nevaero/korai-code-cli/internal/tool"
+	"github.com/korai-one/korai-code-cli/internal/tool"
 )
 
 // TestExecuteBuildsMap drives the tool end-to-end over a tiny repo and checks it

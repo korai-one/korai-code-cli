@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 
-	plantool "github.com/Nevaero/korai-code-cli/internal/tools/plan"
+	plantool "github.com/korai-one/korai-code-cli/internal/tools/plan"
 )
 
 // planReply is the user's resolution of a plan-approval request.

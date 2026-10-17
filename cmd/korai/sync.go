@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Nevaero/korai-code-cli/internal/synckey"
+	"github.com/korai-one/korai-code-cli/internal/synckey"
 )
 
 // syncCmd groups the cross-device history-sync key commands. Sync stays off by
